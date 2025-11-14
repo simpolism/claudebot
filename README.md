@@ -126,6 +126,16 @@ Set `CLI_SIM_MODE=true` to switch the bot into the classic “CLI simulation” 
 
 This trick keeps the conversation hidden inside the faux terminal buffer, which makes some providers more verbose/creative without leaving “CLI mode.” Leave `CLI_SIM_MODE` unset (or false) for normal Discord behavior.
 
+### Inspect cached context
+
+You can inspect exactly what the bot would send to the model for any Discord channel/thread:
+
+```bash
+npx ts-node scripts/inspect-context.ts <channel_or_thread_id>
+```
+
+Add `--raw` to skip trimming so you can see the last `MESSAGE_CACHE_LIMIT` rows straight from `claude-cache.sqlite`. The default view applies the same pruning/token estimates as the live bot, so the output mirrors the real context window.
+
 ---
 
 ## ▶️ Running the bot
