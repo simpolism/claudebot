@@ -235,6 +235,25 @@ function formatAuthoredContent(authorName, content) {
     const finalContent = normalized.length ? normalized : '(empty message)';
     return `${authorName}: ${finalContent}`;
 }
+const USER_MENTION_REGEX = /<@!?(\d+)>/g;
+function formatMentionName(user) {
+    return (user.globalName ??
+        user.username ??
+        user.tag);
+}
+function replaceUserMentions(content, message) {
+    if (!content)
+        return content;
+    return content.replace(USER_MENTION_REGEX, (match, userId) => {
+        const mentionedUser = message.mentions.users.get(userId) ??
+            client.users.cache.get(userId) ??
+            null;
+        if (!mentionedUser) {
+            return match;
+        }
+        return `@${formatMentionName(mentionedUser)}`;
+    });
+}
 async function bootstrapHistory() {
     const result = countMessagesStmt.get();
     const count = result?.count ?? 0;
@@ -275,7 +294,7 @@ async function bootstrapHistory() {
             const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
             const role = isAssistant ? 'assistant' : 'user';
             const attachmentSummary = buildAttachmentSummary(msg.attachments);
-            const messageContent = msg.content || '(empty message)';
+            const messageContent = replaceUserMentions(msg.content || '(empty message)', msg);
             const storedContent = attachmentSummary
                 ? `${messageContent}\n${attachmentSummary}`
                 : messageContent;
@@ -349,7 +368,10 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         const canCacheUserMessage = isInScope(message) && !message.author.bot;
         const attachmentSummary = buildAttachmentSummary(message.attachments);
         const userDisplayName = getUserGlobalName(message);
-        const storedUserContent = formatAuthoredContent(userDisplayName, attachmentSummary ? `${userContent}\n${attachmentSummary}` : userContent);
+        const normalizedUserText = replaceUserMentions(userContent, message);
+        const storedUserContent = formatAuthoredContent(userDisplayName, attachmentSummary
+            ? `${normalizedUserText}\n${attachmentSummary}`
+            : normalizedUserText);
         if (canCacheUserMessage) {
             saveMessage(channelId, 'user', message.author.id, storedUserContent, message.createdTimestamp);
         }
