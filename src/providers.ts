@@ -205,18 +205,17 @@ class OpenAIProvider implements AIProvider {
       content: commandContent,
     });
 
-    const conversationParts = buildOpenAIConversationParts(transcriptText, imageBlocks);
+    const conversationParts = buildOpenAIConversationParts(
+      transcriptText,
+      imageBlocks,
+      botDisplayName,
+    );
     if (conversationParts.length > 0) {
       messages.push({
         role: 'user',
         content: conversationParts,
       });
     }
-
-    messages.push({
-      role: 'assistant',
-      content: `${botDisplayName}:`,
-    });
 
     const stream = await this.client.chat.completions.create({
       model: this.model,
@@ -301,6 +300,7 @@ function buildTranscript(conversation: SimpleMessage[]): string {
 function buildOpenAIConversationParts(
   transcriptText: string,
   imageBlocks: ImageBlock[],
+  botDisplayName: string,
 ): ChatCompletionContentPart[] {
   const parts: ChatCompletionContentPart[] = [];
   if (transcriptText) {
@@ -317,6 +317,11 @@ function buildOpenAIConversationParts(
         url: block.source.url,
       },
     } as ChatCompletionContentPart);
+  });
+
+  parts.push({
+    type: 'text',
+    text: `${botDisplayName}:`,
   });
 
   return parts;

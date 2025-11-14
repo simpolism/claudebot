@@ -150,17 +150,13 @@ class OpenAIProvider {
             role: 'user',
             content: commandContent,
         });
-        const conversationParts = buildOpenAIConversationParts(transcriptText, imageBlocks);
+        const conversationParts = buildOpenAIConversationParts(transcriptText, imageBlocks, botDisplayName);
         if (conversationParts.length > 0) {
             messages.push({
                 role: 'user',
                 content: conversationParts,
             });
         }
-        messages.push({
-            role: 'assistant',
-            content: `${botDisplayName}:`,
-        });
         const stream = await this.client.chat.completions.create({
             model: this.model,
             temperature: this.temperature,
@@ -230,7 +226,7 @@ function buildTranscript(conversation) {
         .join('\n')
         .trim();
 }
-function buildOpenAIConversationParts(transcriptText, imageBlocks) {
+function buildOpenAIConversationParts(transcriptText, imageBlocks, botDisplayName) {
     const parts = [];
     if (transcriptText) {
         parts.push({
@@ -245,6 +241,10 @@ function buildOpenAIConversationParts(transcriptText, imageBlocks) {
                 url: block.source.url,
             },
         });
+    });
+    parts.push({
+        type: 'text',
+        text: `${botDisplayName}:`,
     });
     return parts;
 }
