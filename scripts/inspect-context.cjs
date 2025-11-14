@@ -1,35 +1,23 @@
-import 'dotenv/config';
-import Database from 'better-sqlite3';
-
-type Role = 'user' | 'assistant';
-
-type CachedMessage = {
-  role: Role;
-  content: string;
-  created_at: number;
-};
-
-type SimpleMessage = {
-  role: Role;
-  content: string;
-};
+#!/usr/bin/env node
+require('dotenv/config');
+const Database = require('better-sqlite3');
 
 const MESSAGE_CACHE_LIMIT = parseInt(process.env.MESSAGE_CACHE_LIMIT || '500', 10);
 const MAX_CONTEXT_TOKENS = parseInt(process.env.MAX_CONTEXT_TOKENS || '180000', 10);
 const APPROX_CHARS_PER_TOKEN = parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4');
 
 const args = process.argv.slice(2);
-const channelId = args[0];
+const channelId = args.find((arg) => !arg.startsWith('--'));
 const showRaw = args.includes('--raw');
 
 if (!channelId) {
-  console.error('Usage: npx ts-node scripts/inspect-context.ts <channel_id> [--raw]');
+  console.error('Usage: node scripts/inspect-context.cjs <channel_id> [--raw]');
   process.exit(1);
 }
 
 const db = new Database('claude-cache.sqlite');
 
-function fetchMessages(id: string): CachedMessage[] {
+function fetchMessages(id) {
   const stmt = db.prepare(
     `
       SELECT role, content, created_at
@@ -39,18 +27,18 @@ function fetchMessages(id: string): CachedMessage[] {
       LIMIT ?
     `,
   );
-  const rows = stmt.all(id, MESSAGE_CACHE_LIMIT) as CachedMessage[];
+  const rows = stmt.all(id, MESSAGE_CACHE_LIMIT);
   rows.reverse();
   return rows;
 }
 
-function estimateTokens(text: string): number {
+function estimateTokens(text) {
   return Math.ceil(text.length / Math.max(APPROX_CHARS_PER_TOKEN, 1));
 }
 
-function trimConversation(messages: SimpleMessage[]): SimpleMessage[] {
+function trimConversation(messages) {
   let totalTokens = 0;
-  const trimmed: SimpleMessage[] = [];
+  const trimmed = [];
 
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
@@ -67,7 +55,7 @@ function trimConversation(messages: SimpleMessage[]): SimpleMessage[] {
   return trimmed.reverse();
 }
 
-function summarize(messages: SimpleMessage[]): void {
+function summarize(messages) {
   let totalTokens = 0;
   console.log(`Context window for channel/thread ${channelId}`);
   console.log(`Messages included: ${messages.length}`);
@@ -88,16 +76,11 @@ if (cached.length === 0) {
   process.exit(0);
 }
 
-const transformed: SimpleMessage[] = cached.map((message) => ({
-  role: message.role,
-  content: message.content,
-}));
+const windowMessages = showRaw ? cached : trimConversation(cached);
 
-const windowMessages = showRaw ? transformed : trimConversation(transformed);
-
-if (!showRaw && windowMessages.length !== transformed.length) {
+if (!showRaw && windowMessages.length !== cached.length) {
   console.log(
-    `Trimmed ${transformed.length - windowMessages.length} older message(s) to satisfy MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS}.`,
+    `Trimmed ${cached.length - windowMessages.length} older message(s) to satisfy MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS}.`,
   );
 }
 
