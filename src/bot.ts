@@ -23,7 +23,7 @@ const MESSAGE_CACHE_LIMIT = parseInt(
   10,
 );
 const BOOTSTRAP_MESSAGE_LIMIT = parseInt(
-  process.env.BOOTSTRAP_MESSAGE_LIMIT || '100',
+  process.env.BOOTSTRAP_MESSAGE_LIMIT || '1000',
   10,
 );
 const MAX_CONTEXT_TOKENS = parseInt(
@@ -381,7 +381,23 @@ function getBotDisplayName(): string {
 function formatAuthoredContent(authorName: string, content: string): string {
   const normalized = content.trim();
   const finalContent = normalized.length ? normalized : '(empty message)';
-  return `<${authorName}>: ${finalContent}`;
+  return `${authorName}: ${finalContent}`;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripBotNamePrefix(text: string, botName: string): string {
+  const trimmed = text.trimStart();
+  if (!botName) return trimmed;
+
+  const prefixPattern = new RegExp(
+    `^<?\\s*${escapeRegExp(botName)}\\s*>?:\\s*`,
+    'i',
+  );
+
+  return trimmed.replace(prefixPattern, '').trimStart();
 }
 
 async function bootstrapHistory(): Promise<void> {
@@ -405,12 +421,28 @@ async function bootstrapHistory(): Promise<void> {
       return;
     }
 
-    const fetched = await channel.messages.fetch({
-      limit: BOOTSTRAP_MESSAGE_LIMIT,
-    });
-    const sortedMessages = [...fetched.values()].sort(
-      (a, b) => a.createdTimestamp - b.createdTimestamp,
-    );
+    const collectedMessages: Message[] = [];
+    let lastId: string | undefined;
+    while (collectedMessages.length < BOOTSTRAP_MESSAGE_LIMIT) {
+      const remaining = BOOTSTRAP_MESSAGE_LIMIT - collectedMessages.length;
+      const fetchLimit = Math.min(remaining, 100);
+      const fetched = await channel.messages.fetch({
+        limit: fetchLimit,
+        before: lastId,
+      });
+
+      if (fetched.size === 0) {
+        break;
+      }
+
+      const newMessages = [...fetched.values()];
+      collectedMessages.push(...newMessages);
+      lastId = newMessages[newMessages.length - 1]?.id;
+    }
+
+    const sortedMessages = collectedMessages
+      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+      .slice(-BOOTSTRAP_MESSAGE_LIMIT);
 
     console.log(
       `Bootstrapping ${sortedMessages.length} historical message${
@@ -548,9 +580,10 @@ client.on(Events.MessageCreate, async (message) => {
     stopTyping = null;
 
     // Send reply (chunked to satisfy Discord's message length limit)
-    const replyChunks = chunkReplyText(replyText);
-    let lastSent: Message | null = null;
     const botDisplayName = getBotDisplayName();
+    const cleanedReply = stripBotNamePrefix(replyText, botDisplayName);
+    const replyChunks = chunkReplyText(cleanedReply);
+    let lastSent: Message | null = null;
     if (replyChunks.length > 0) {
       const [firstChunk, ...restChunks] = replyChunks;
       lastSent = await message.reply(firstChunk);
