@@ -9,6 +9,7 @@ const APPROX_CHARS_PER_TOKEN = parseFloat(process.env.APPROX_CHARS_PER_TOKEN || 
 const args = process.argv.slice(2);
 const channelId = args.find((arg) => !arg.startsWith('--'));
 const showRaw = args.includes('--raw');
+const plainOutput = args.includes('--plain');
 
 if (!channelId) {
   console.error('Usage: node scripts/inspect-context.cjs <channel_id> [--raw]');
@@ -78,10 +79,17 @@ if (cached.length === 0) {
 
 const windowMessages = showRaw ? cached : trimConversation(cached);
 
-if (!showRaw && windowMessages.length !== cached.length) {
+if (!showRaw && windowMessages.length !== cached.length && !plainOutput) {
   console.log(
     `Trimmed ${cached.length - windowMessages.length} older message(s) to satisfy MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS}.`,
   );
 }
 
-summarize(windowMessages);
+if (plainOutput) {
+  windowMessages.forEach((message) => {
+    console.log(message.content);
+    console.log('');
+  });
+} else {
+  summarize(windowMessages);
+}

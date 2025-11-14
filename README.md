@@ -134,7 +134,7 @@ You can inspect exactly what the bot would send to the model for any Discord cha
 node scripts/inspect-context.cjs <channel_or_thread_id>
 ```
 
-Add `--raw` to skip trimming so you can see the last `MESSAGE_CACHE_LIMIT` rows straight from `claude-cache.sqlite`. The default view applies the same pruning/token estimates as the live bot, so the output mirrors the real context window.
+Add `--raw` to skip trimming so you can see the last `MESSAGE_CACHE_LIMIT` rows straight from `claude-cache.sqlite`. The default view applies the same pruning/token estimates as the live bot, so the output mirrors the real context window. Pass `--plain` to emit the exact stored message text (no numbering/token annotations) in the same order it will be sent upstream.
 
 ---
 
