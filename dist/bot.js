@@ -24,7 +24,7 @@ const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT && process.env.SYSTEM_PROMPT.tri
     ? process.env.SYSTEM_PROMPT
     : DEFAULT_SYSTEM_PROMPT;
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'moonshotai/kimi-k2-instruct-0905';
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 // ---------- SQLite setup (file-based cache) ----------
