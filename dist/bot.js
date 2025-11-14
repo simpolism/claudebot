@@ -119,7 +119,7 @@ function buildConversation(channelId) {
     return trimConversation(messages);
 }
 // Call Claude with Anthropic prompt caching on the system prompt
-async function callClaude(conversation, imageBlocks = []) {
+async function callClaude(conversation, botDisplayName, imageBlocks = []) {
     const trimmedSystemPrompt = SYSTEM_PROMPT.trim();
     const systemBlocks = trimmedSystemPrompt
         ? [
@@ -130,23 +130,26 @@ async function callClaude(conversation, imageBlocks = []) {
             },
         ]
         : undefined;
-    const messagesPayload = conversation.map((msg, index) => {
-        const contentBlocks = [
-            {
-                type: 'text',
-                text: msg.content,
-            },
-        ];
-        if (imageBlocks.length > 0 &&
-            index === conversation.length - 1 &&
-            msg.role === 'user') {
-            contentBlocks.push(...imageBlocks);
-        }
-        return {
-            role: msg.role,
+    const transcriptText = conversation
+        .map((msg) => msg.content)
+        .join('\n')
+        .trim();
+    const promptWithBotName = transcriptText
+        ? `${transcriptText}\n${botDisplayName}:`
+        : `${botDisplayName}:`;
+    const contentBlocks = [
+        {
+            type: 'text',
+            text: promptWithBotName,
+        },
+        ...imageBlocks,
+    ];
+    const messagesPayload = [
+        {
+            role: 'user',
             content: contentBlocks,
-        };
-    });
+        },
+    ];
     const response = await anthropic.messages.create({
         model: CLAUDE_MODEL,
         max_tokens: MAX_TOKENS,
@@ -255,16 +258,6 @@ function formatAuthoredContent(authorName, content) {
     const normalized = content.trim();
     const finalContent = normalized.length ? normalized : '(empty message)';
     return `${authorName}: ${finalContent}`;
-}
-function escapeRegExp(text) {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-function stripBotNamePrefix(text, botName) {
-    const trimmed = text.trimStart();
-    if (!botName)
-        return trimmed;
-    const prefixPattern = new RegExp(`^<?\\s*${escapeRegExp(botName)}\\s*>?:\\s*`, 'i');
-    return trimmed.replace(prefixPattern, '').trimStart();
 }
 async function bootstrapHistory() {
     const result = countMessagesStmt.get();
@@ -386,6 +379,7 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         }
         if (!shouldRespond(message))
             return;
+        const botDisplayName = getBotDisplayName();
         // Save user message for this channel/thread context
         // (already cached above when canCacheUserMessage true)
         // Build conversation (recent history + this new message)
@@ -393,13 +387,11 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         // Call Claude
         stopTyping = startTypingIndicator(message.channel);
         const imageBlocks = getImageBlocksFromAttachments(message.attachments);
-        const replyText = await callClaude(conversation, imageBlocks);
+        const replyText = await callClaude(conversation, botDisplayName, imageBlocks);
         stopTyping();
         stopTyping = null;
         // Send reply (chunked to satisfy Discord's message length limit)
-        const botDisplayName = getBotDisplayName();
-        const cleanedReply = stripBotNamePrefix(replyText, botDisplayName);
-        const replyChunks = chunkReplyText(cleanedReply);
+        const replyChunks = chunkReplyText(replyText);
         let lastSent = null;
         if (replyChunks.length > 0) {
             const [firstChunk, ...restChunks] = replyChunks;
