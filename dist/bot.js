@@ -219,14 +219,14 @@ function getImageBlocksFromAttachments(attachments) {
     });
     return blocks;
 }
-function getUserGlobalName(message) {
-    return (message.author.globalName ??
-        message.author.username ??
+function getUserCanonicalName(message) {
+    return (message.author.username ??
+        message.author.globalName ??
         message.author.tag);
 }
-function getBotGlobalName() {
-    return (client.user?.globalName ??
-        client.user?.username ??
+function getBotCanonicalName() {
+    return (client.user?.username ??
+        client.user?.globalName ??
         client.user?.tag ??
         'Claude Bot');
 }
@@ -237,8 +237,8 @@ function formatAuthoredContent(authorName, content) {
 }
 const USER_MENTION_REGEX = /<@!?(\d+)>/g;
 function formatMentionName(user) {
-    return (user.globalName ??
-        user.username ??
+    return (user.username ??
+        user.globalName ??
         user.tag);
 }
 function replaceUserMentions(content, message) {
@@ -299,8 +299,8 @@ async function bootstrapHistory() {
                 ? `${messageContent}\n${attachmentSummary}`
                 : messageContent;
             const authorName = isAssistant
-                ? getBotGlobalName()
-                : getUserGlobalName(msg);
+                ? getBotCanonicalName()
+                : getUserCanonicalName(msg);
             saveMessage(msg.channel.id, role, msg.author.id, formatAuthoredContent(authorName, storedContent), msg.createdTimestamp);
         }
     }
@@ -367,7 +367,7 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         const userContent = message.content || '(empty message)';
         const canCacheUserMessage = isInScope(message) && !message.author.bot;
         const attachmentSummary = buildAttachmentSummary(message.attachments);
-        const userDisplayName = getUserGlobalName(message);
+        const userDisplayName = getUserCanonicalName(message);
         const normalizedUserText = replaceUserMentions(userContent, message);
         const storedUserContent = formatAuthoredContent(userDisplayName, attachmentSummary
             ? `${normalizedUserText}\n${attachmentSummary}`
@@ -377,7 +377,7 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         }
         if (!shouldRespond(message))
             return;
-        const botDisplayName = getBotGlobalName();
+        const botDisplayName = getBotCanonicalName();
         // Save user message for this channel/thread context
         // (already cached above when canCacheUserMessage true)
         // Build conversation (recent history + this new message)

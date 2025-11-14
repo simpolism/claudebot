@@ -310,18 +310,18 @@ function getImageBlocksFromAttachments(
   return blocks;
 }
 
-function getUserGlobalName(message: Message): string {
+function getUserCanonicalName(message: Message): string {
   return (
-    message.author.globalName ??
     message.author.username ??
+    message.author.globalName ??
     message.author.tag
   );
 }
 
-function getBotGlobalName(): string {
+function getBotCanonicalName(): string {
   return (
-    client.user?.globalName ??
     client.user?.username ??
+    client.user?.globalName ??
     client.user?.tag ??
     'Claude Bot'
   );
@@ -337,8 +337,8 @@ const USER_MENTION_REGEX = /<@!?(\d+)>/g;
 
 function formatMentionName(user: Message['author']): string {
   return (
-    user.globalName ??
     user.username ??
+    user.globalName ??
     user.tag
   );
 }
@@ -420,8 +420,8 @@ async function bootstrapHistory(): Promise<void> {
         ? `${messageContent}\n${attachmentSummary}`
         : messageContent;
       const authorName = isAssistant
-        ? getBotGlobalName()
-        : getUserGlobalName(msg);
+        ? getBotCanonicalName()
+        : getUserCanonicalName(msg);
 
       saveMessage(
         msg.channel.id,
@@ -508,7 +508,7 @@ client.on(Events.MessageCreate, async (message) => {
     const userContent = message.content || '(empty message)';
     const canCacheUserMessage = isInScope(message) && !message.author.bot;
     const attachmentSummary = buildAttachmentSummary(message.attachments);
-    const userDisplayName = getUserGlobalName(message);
+    const userDisplayName = getUserCanonicalName(message);
     const normalizedUserText = replaceUserMentions(userContent, message);
     const storedUserContent = formatAuthoredContent(
       userDisplayName,
@@ -529,7 +529,7 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (!shouldRespond(message)) return;
 
-    const botDisplayName = getBotGlobalName();
+    const botDisplayName = getBotCanonicalName();
     // Save user message for this channel/thread context
     // (already cached above when canCacheUserMessage true)
 
