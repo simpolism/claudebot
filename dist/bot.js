@@ -5,15 +5,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const discord_js_1 = require("discord.js");
-const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
-const error_1 = require("@anthropic-ai/sdk/error");
 const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
+const providers_1 = require("./providers");
 // ---------- Config ----------
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const MAIN_CHANNEL_ID = process.env.MAIN_CHANNEL_ID; // text channel id
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-4-5';
 const MESSAGE_CACHE_LIMIT = parseInt(process.env.MESSAGE_CACHE_LIMIT || '500', 10);
-const BOOTSTRAP_MESSAGE_LIMIT = parseInt(process.env.BOOTSTRAP_MESSAGE_LIMIT || '1000', 10);
+const BOOTSTRAP_MESSAGE_LIMIT = parseInt(process.env.BOOTSTRAP_MESSAGE_LIMIT || `${MESSAGE_CACHE_LIMIT}`, 10);
 const MAX_CONTEXT_TOKENS = parseInt(process.env.MAX_CONTEXT_TOKENS || '180000', 10);
 const APPROX_CHARS_PER_TOKEN = parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4');
 const DISCORD_MESSAGE_LIMIT = 2000;
@@ -24,6 +23,14 @@ const PREFILL_COMMAND = '<cmd>cat untitled.txt</cmd>';
 const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT && process.env.SYSTEM_PROMPT.trim().length > 0
     ? process.env.SYSTEM_PROMPT
     : DEFAULT_SYSTEM_PROMPT;
+const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
+const OPENAI_MODEL = process.env.OPENAI_MODEL ||
+    process.env.MOONSHOT_MODEL ||
+    'moonshot-v1-128k';
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL ||
+    process.env.MOONSHOT_BASE_URL ||
+    'https://api.moonshot.ai/v1';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.MOONSHOT_API_KEY || '';
 // ---------- SQLite setup (file-based cache) ----------
 const db = new better_sqlite3_1.default('claude-cache.sqlite');
 db.pragma('journal_mode = WAL');
@@ -68,14 +75,6 @@ function saveMessage(channelId, role, authorId, content, createdAt) {
     // keep only last N per channel/thread
     pruneOldMessagesStmt.run(channelId, MESSAGE_CACHE_LIMIT);
 }
-// ---------- Anthropic (Claude) client with prompt caching beta ----------
-const anthropic = new sdk_1.default({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    // enable prompt-caching beta globally for this client 
-    defaultHeaders: {
-        'anthropic-beta': 'prompt-caching-2024-07-31',
-    },
-});
 // ---------- Discord client ----------
 const client = new discord_js_1.Client({
     intents: [
@@ -84,6 +83,17 @@ const client = new discord_js_1.Client({
         discord_js_1.GatewayIntentBits.MessageContent,
     ],
     partials: [discord_js_1.Partials.Channel, discord_js_1.Partials.Message],
+});
+const aiProvider = (0, providers_1.createAIProvider)({
+    provider: AI_PROVIDER,
+    systemPrompt: SYSTEM_PROMPT,
+    prefillCommand: PREFILL_COMMAND,
+    temperature: TEMPERATURE,
+    maxTokens: MAX_TOKENS,
+    anthropicModel: CLAUDE_MODEL,
+    openaiModel: OPENAI_MODEL,
+    openaiBaseURL: OPENAI_BASE_URL,
+    openaiApiKey: OPENAI_API_KEY,
 });
 function isThreadChannel(channel) {
     return (channel.type === discord_js_1.ChannelType.PublicThread ||
@@ -122,104 +132,6 @@ function buildConversation(channelId) {
         content: row.content,
     }));
     return trimConversation(messages);
-}
-async function callClaude(conversation, botDisplayName, imageBlocks = []) {
-    const trimmedSystemPrompt = SYSTEM_PROMPT.trim();
-    const systemBlocks = trimmedSystemPrompt
-        ? [
-            {
-                type: 'text',
-                text: trimmedSystemPrompt,
-                cache_control: { type: 'ephemeral' },
-            },
-        ]
-        : undefined;
-    const transcriptText = conversation
-        .map((msg) => msg.content)
-        .join('\n')
-        .trim();
-    const conversationBlocks = [
-        {
-            type: 'text',
-            text: transcriptText,
-        },
-        ...imageBlocks,
-    ];
-    const commandBlocks = [
-        {
-            type: 'text',
-            text: PREFILL_COMMAND,
-        },
-    ];
-    const messagesPayload = [
-        {
-            role: 'user',
-            content: commandBlocks,
-        },
-        ...(transcriptText
-            ? [
-                {
-                    role: 'user',
-                    content: conversationBlocks,
-                },
-            ]
-            : []),
-        {
-            role: 'assistant',
-            content: [
-                {
-                    type: 'text',
-                    text: `${botDisplayName}:`,
-                },
-            ],
-        },
-    ];
-    const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
-    const fragmentationRegex = buildFragmentationRegex(trackedSpeakers);
-    const stream = anthropic.messages.stream({
-        model: CLAUDE_MODEL,
-        max_tokens: MAX_TOKENS,
-        temperature: TEMPERATURE,
-        system: systemBlocks,
-        messages: messagesPayload,
-    });
-    let aggregatedText = '';
-    let truncated = false;
-    let truncatedSpeaker;
-    let abortedByGuard = false;
-    stream.on('text', (textDelta) => {
-        if (truncated)
-            return;
-        aggregatedText += textDelta;
-        if (!fragmentationRegex)
-            return;
-        fragmentationRegex.lastIndex = 0;
-        const match = fragmentationRegex.exec(aggregatedText);
-        if (!match)
-            return;
-        truncated = true;
-        truncatedSpeaker = match[1]?.trim();
-        aggregatedText = aggregatedText.slice(0, match.index).trimEnd();
-        abortedByGuard = true;
-        stream.controller.abort();
-    });
-    try {
-        await stream.finalMessage();
-    }
-    catch (err) {
-        if (!(abortedByGuard && err instanceof error_1.APIUserAbortError)) {
-            throw err;
-        }
-    }
-    const text = aggregatedText.trim() || '(no response text)';
-    if (truncated && truncatedSpeaker) {
-        console.warn(`Claude output truncated after detecting speaker "${truncatedSpeaker}".`);
-    }
-    return {
-        text,
-        truncated,
-        truncatedSpeaker,
-    };
 }
 function estimateTokens(text) {
     return Math.ceil(text.length / Math.max(APPROX_CHARS_PER_TOKEN, 1));
@@ -314,37 +226,6 @@ function formatAuthoredContent(authorName, content) {
     const normalized = content.trim();
     const finalContent = normalized.length ? normalized : '(empty message)';
     return `${authorName}: ${finalContent}`;
-}
-function escapeRegExp(text) {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-function extractAuthorName(content) {
-    const colonIndex = content.indexOf(':');
-    if (colonIndex === -1) {
-        return null;
-    }
-    return content.slice(0, colonIndex).trim();
-}
-function getTrackedUserNames(conversation, botDisplayName) {
-    const normalizedBot = botDisplayName.toLowerCase();
-    const names = new Set();
-    conversation.forEach((message) => {
-        if (message.role !== 'user')
-            return;
-        const authorName = extractAuthorName(message.content);
-        if (!authorName)
-            return;
-        if (authorName.toLowerCase() === normalizedBot)
-            return;
-        names.add(authorName);
-    });
-    return [...names];
-}
-function buildFragmentationRegex(names) {
-    if (names.length === 0)
-        return null;
-    const escapedNames = names.map(escapeRegExp).join('|');
-    return new RegExp(`(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`, 'i');
 }
 async function bootstrapHistory() {
     const result = countMessagesStmt.get();
@@ -474,7 +355,11 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         // Call Claude
         stopTyping = startTypingIndicator(message.channel);
         const imageBlocks = getImageBlocksFromAttachments(message.attachments);
-        const claudeReply = await callClaude(conversation, botDisplayName, imageBlocks);
+        const claudeReply = await aiProvider.send({
+            conversation,
+            botDisplayName,
+            imageBlocks,
+        });
         const replyText = claudeReply.text;
         stopTyping();
         stopTyping = null;

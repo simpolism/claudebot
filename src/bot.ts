@@ -10,9 +10,9 @@ import {
   PrivateThreadChannel,
   PublicThreadChannel,
 } from 'discord.js';
-import Anthropic from '@anthropic-ai/sdk';
-import { APIUserAbortError } from '@anthropic-ai/sdk/error';
 import Database from 'better-sqlite3';
+import { createAIProvider } from './providers';
+import { ImageBlock, SimpleMessage } from './types';
 
 // ---------- Config ----------
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -24,7 +24,7 @@ const MESSAGE_CACHE_LIMIT = parseInt(
   10,
 );
 const BOOTSTRAP_MESSAGE_LIMIT = parseInt(
-  process.env.BOOTSTRAP_MESSAGE_LIMIT || '1000',
+  process.env.BOOTSTRAP_MESSAGE_LIMIT || `${MESSAGE_CACHE_LIMIT}`,
   10,
 );
 const MAX_CONTEXT_TOKENS = parseInt(
@@ -44,6 +44,17 @@ const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT && process.env.SYSTEM_PROMPT.trim().length > 0
     ? process.env.SYSTEM_PROMPT
     : DEFAULT_SYSTEM_PROMPT;
+const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
+const OPENAI_MODEL =
+  process.env.OPENAI_MODEL ||
+  process.env.MOONSHOT_MODEL ||
+  'moonshot-v1-128k';
+const OPENAI_BASE_URL =
+  process.env.OPENAI_BASE_URL ||
+  process.env.MOONSHOT_BASE_URL ||
+  'https://api.moonshot.ai/v1';
+const OPENAI_API_KEY =
+  process.env.OPENAI_API_KEY || process.env.MOONSHOT_API_KEY || '';
 
 // ---------- SQLite setup (file-based cache) ----------
 const db = new Database('claude-cache.sqlite');
@@ -110,35 +121,6 @@ function saveMessage(
   pruneOldMessagesStmt.run(channelId, MESSAGE_CACHE_LIMIT);
 }
 
-type SimpleMessage = {
-  role: 'user' | 'assistant';
-  content: string;
-};
-
-type ImageBlock = {
-  type: 'image';
-  source: {
-    type: 'url';
-    url: string;
-  };
-};
-
-type TextBlock = {
-  type: 'text';
-  text: string;
-};
-
-type ClaudeContentBlock = TextBlock | ImageBlock;
-
-// ---------- Anthropic (Claude) client with prompt caching beta ----------
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  // enable prompt-caching beta globally for this client 
-  defaultHeaders: {
-    'anthropic-beta': 'prompt-caching-2024-07-31',
-  },
-});
-
 // ---------- Discord client ----------
 const client = new Client({
   intents: [
@@ -147,6 +129,18 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel, Partials.Message],
+});
+
+const aiProvider = createAIProvider({
+  provider: AI_PROVIDER,
+  systemPrompt: SYSTEM_PROMPT,
+  prefillCommand: PREFILL_COMMAND,
+  temperature: TEMPERATURE,
+  maxTokens: MAX_TOKENS,
+  anthropicModel: CLAUDE_MODEL,
+  openaiModel: OPENAI_MODEL,
+  openaiBaseURL: OPENAI_BASE_URL,
+  openaiApiKey: OPENAI_API_KEY,
 });
 
 type TextThreadChannel = PublicThreadChannel | PrivateThreadChannel;
@@ -202,123 +196,6 @@ function buildConversation(channelId: string): SimpleMessage[] {
   }));
 
   return trimConversation(messages);
-}
-
-// Call Claude with Anthropic prompt caching on the system prompt
-type ClaudeReply = {
-  text: string;
-  truncated: boolean;
-  truncatedSpeaker?: string;
-};
-
-async function callClaude(
-  conversation: SimpleMessage[],
-  botDisplayName: string,
-  imageBlocks: ImageBlock[] = [],
-): Promise<ClaudeReply> {
-  const trimmedSystemPrompt = SYSTEM_PROMPT.trim();
-  const systemBlocks = trimmedSystemPrompt
-    ? [
-        {
-          type: 'text' as const,
-          text: trimmedSystemPrompt,
-          cache_control: { type: 'ephemeral' as const },
-        },
-      ]
-    : undefined;
-
-  const transcriptText = conversation
-    .map((msg) => msg.content)
-    .join('\n')
-    .trim();
-  const conversationBlocks: ClaudeContentBlock[] = [
-    {
-      type: 'text',
-      text: transcriptText,
-    },
-    ...imageBlocks,
-  ];
-
-  const commandBlocks: ClaudeContentBlock[] = [
-    {
-      type: 'text',
-      text: PREFILL_COMMAND,
-    },
-  ];
-
-  const messagesPayload = [
-    {
-      role: 'user' as const,
-      content: commandBlocks,
-    },
-    ...(transcriptText
-      ? [
-          {
-            role: 'user' as const,
-            content: conversationBlocks,
-          },
-        ]
-      : []),
-    {
-      role: 'assistant' as const,
-      content: [
-        {
-          type: 'text' as const,
-          text: `${botDisplayName}:`,
-        },
-      ],
-    },
-  ];
-
-  const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
-  const fragmentationRegex = buildFragmentationRegex(trackedSpeakers);
-  const stream = anthropic.messages.stream({
-    model: CLAUDE_MODEL,
-    max_tokens: MAX_TOKENS,
-    temperature: TEMPERATURE,
-    system: systemBlocks,
-    messages: messagesPayload,
-  });
-
-  let aggregatedText = '';
-  let truncated = false;
-  let truncatedSpeaker: string | undefined;
-  let abortedByGuard = false;
-
-  stream.on('text', (textDelta) => {
-    if (truncated) return;
-    aggregatedText += textDelta;
-    if (!fragmentationRegex) return;
-    fragmentationRegex.lastIndex = 0;
-    const match = fragmentationRegex.exec(aggregatedText);
-    if (!match) return;
-    truncated = true;
-    truncatedSpeaker = match[1]?.trim();
-    aggregatedText = aggregatedText.slice(0, match.index).trimEnd();
-    abortedByGuard = true;
-    stream.controller.abort();
-  });
-
-  try {
-    await stream.finalMessage();
-  } catch (err) {
-    if (!(abortedByGuard && err instanceof APIUserAbortError)) {
-      throw err;
-    }
-  }
-
-  const text = aggregatedText.trim() || '(no response text)';
-  if (truncated && truncatedSpeaker) {
-    console.warn(
-      `Claude output truncated after detecting speaker "${truncatedSpeaker}".`,
-    );
-  }
-
-  return {
-    text,
-    truncated,
-    truncatedSpeaker,
-  };
 }
 
 function estimateTokens(text: string): number {
@@ -448,43 +325,6 @@ function formatAuthoredContent(authorName: string, content: string): string {
   const normalized = content.trim();
   const finalContent = normalized.length ? normalized : '(empty message)';
   return `${authorName}: ${finalContent}`;
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function extractAuthorName(content: string): string | null {
-  const colonIndex = content.indexOf(':');
-  if (colonIndex === -1) {
-    return null;
-  }
-  return content.slice(0, colonIndex).trim();
-}
-
-function getTrackedUserNames(
-  conversation: SimpleMessage[],
-  botDisplayName: string,
-): string[] {
-  const normalizedBot = botDisplayName.toLowerCase();
-  const names = new Set<string>();
-  conversation.forEach((message) => {
-    if (message.role !== 'user') return;
-    const authorName = extractAuthorName(message.content);
-    if (!authorName) return;
-    if (authorName.toLowerCase() === normalizedBot) return;
-    names.add(authorName);
-  });
-  return [...names];
-}
-
-function buildFragmentationRegex(names: string[]): RegExp | null {
-  if (names.length === 0) return null;
-  const escapedNames = names.map(escapeRegExp).join('|');
-  return new RegExp(
-    `(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`,
-    'i',
-  );
 }
 
 async function bootstrapHistory(): Promise<void> {
@@ -663,11 +503,11 @@ client.on(Events.MessageCreate, async (message) => {
     // Call Claude
     stopTyping = startTypingIndicator(message.channel);
     const imageBlocks = getImageBlocksFromAttachments(message.attachments);
-    const claudeReply = await callClaude(
+    const claudeReply = await aiProvider.send({
       conversation,
       botDisplayName,
       imageBlocks,
-    );
+    });
     const replyText = claudeReply.text;
     stopTyping();
     stopTyping = null;
