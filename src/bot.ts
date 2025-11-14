@@ -46,15 +46,10 @@ const SYSTEM_PROMPT =
     : DEFAULT_SYSTEM_PROMPT;
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
 const OPENAI_MODEL =
-  process.env.OPENAI_MODEL ||
-  process.env.MOONSHOT_MODEL ||
-  'moonshot-v1-128k';
+  process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const OPENAI_BASE_URL =
-  process.env.OPENAI_BASE_URL ||
-  process.env.MOONSHOT_BASE_URL ||
-  'https://api.moonshot.ai/v1';
-const OPENAI_API_KEY =
-  process.env.OPENAI_API_KEY || process.env.MOONSHOT_API_KEY || '';
+  process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 // ---------- SQLite setup (file-based cache) ----------
 const db = new Database('claude-cache.sqlite');

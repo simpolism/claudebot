@@ -24,13 +24,9 @@ const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT && process.env.SYSTEM_PROMPT.tri
     ? process.env.SYSTEM_PROMPT
     : DEFAULT_SYSTEM_PROMPT;
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
-const OPENAI_MODEL = process.env.OPENAI_MODEL ||
-    process.env.MOONSHOT_MODEL ||
-    'moonshot-v1-128k';
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL ||
-    process.env.MOONSHOT_BASE_URL ||
-    'https://api.moonshot.ai/v1';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.MOONSHOT_API_KEY || '';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 // ---------- SQLite setup (file-based cache) ----------
 const db = new better_sqlite3_1.default('claude-cache.sqlite');
 db.pragma('journal_mode = WAL');

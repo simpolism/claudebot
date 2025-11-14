@@ -8,8 +8,6 @@ import type {
 } from 'openai/resources/chat/completions/completions';
 import { ClaudeContentBlock, ImageBlock, SimpleMessage, AIResponse } from './types';
 
-type ProviderSelection = 'anthropic' | 'moonshot';
-
 type ProviderInitOptions = {
   provider: string;
   systemPrompt: string;
@@ -33,8 +31,8 @@ export interface AIProvider {
 }
 
 export function createAIProvider(options: ProviderInitOptions): AIProvider {
-  const normalized = options.provider.toLowerCase() as ProviderSelection | 'openai';
-  if (normalized === 'moonshot' || normalized === 'openai') {
+  const normalized = options.provider.toLowerCase();
+  if (normalized === 'openai') {
     return new OpenAIProvider(options);
   }
   return new AnthropicProvider(options);

@@ -9,7 +9,7 @@ const error_1 = require("@anthropic-ai/sdk/error");
 const openai_1 = __importDefault(require("openai"));
 function createAIProvider(options) {
     const normalized = options.provider.toLowerCase();
-    if (normalized === 'moonshot' || normalized === 'openai') {
+    if (normalized === 'openai') {
         return new OpenAIProvider(options);
     }
     return new AnthropicProvider(options);
