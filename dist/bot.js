@@ -138,13 +138,10 @@ async function callClaude(conversation, botDisplayName, imageBlocks = []) {
         .map((msg) => msg.content)
         .join('\n')
         .trim();
-    const promptWithBotName = transcriptText
-        ? `${transcriptText}\n${botDisplayName}:`
-        : `${botDisplayName}:`;
     const conversationBlocks = [
         {
             type: 'text',
-            text: promptWithBotName,
+            text: transcriptText,
         },
         ...imageBlocks,
     ];
@@ -159,9 +156,22 @@ async function callClaude(conversation, botDisplayName, imageBlocks = []) {
             role: 'user',
             content: commandBlocks,
         },
+        ...(transcriptText
+            ? [
+                {
+                    role: 'user',
+                    content: conversationBlocks,
+                },
+            ]
+            : []),
         {
-            role: 'user',
-            content: conversationBlocks,
+            role: 'assistant',
+            content: [
+                {
+                    type: 'text',
+                    text: `${botDisplayName}:`,
+                },
+            ],
         },
     ];
     const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);

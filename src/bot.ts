@@ -231,14 +231,10 @@ async function callClaude(
     .map((msg) => msg.content)
     .join('\n')
     .trim();
-  const promptWithBotName = transcriptText
-    ? `${transcriptText}\n${botDisplayName}:`
-    : `${botDisplayName}:`;
-
   const conversationBlocks: ClaudeContentBlock[] = [
     {
       type: 'text',
-      text: promptWithBotName,
+      text: transcriptText,
     },
     ...imageBlocks,
   ];
@@ -255,9 +251,22 @@ async function callClaude(
       role: 'user' as const,
       content: commandBlocks,
     },
+    ...(transcriptText
+      ? [
+          {
+            role: 'user' as const,
+            content: conversationBlocks,
+          },
+        ]
+      : []),
     {
-      role: 'user' as const,
-      content: conversationBlocks,
+      role: 'assistant' as const,
+      content: [
+        {
+          type: 'text' as const,
+          text: `${botDisplayName}:`,
+        },
+      ],
     },
   ];
 
