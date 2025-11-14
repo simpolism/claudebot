@@ -22,6 +22,10 @@ const MESSAGE_CACHE_LIMIT = parseInt(
   process.env.MESSAGE_CACHE_LIMIT || '500',
   10,
 );
+const BOOTSTRAP_MESSAGE_LIMIT = parseInt(
+  process.env.BOOTSTRAP_MESSAGE_LIMIT || '100',
+  10,
+);
 const MAX_CONTEXT_TOKENS = parseInt(
   process.env.MAX_CONTEXT_TOKENS || '180000',
   10,
@@ -78,13 +82,24 @@ const pruneOldMessagesStmt = db.prepare<[channelId: string, offset: number]>(`
   )
 `);
 
+const countMessagesStmt = db.prepare<[], { count: number }>(`
+  SELECT COUNT(*) as count FROM messages
+`);
+
 function saveMessage(
   channelId: string,
   role: 'user' | 'assistant',
   authorId: string,
   content: string,
+  createdAt?: number,
 ) {
-  insertMessageStmt.run(channelId, role, authorId, content, Date.now());
+  insertMessageStmt.run(
+    channelId,
+    role,
+    authorId,
+    content,
+    createdAt ?? Date.now(),
+  );
   // keep only last N per channel/thread
   pruneOldMessagesStmt.run(channelId, MESSAGE_CACHE_LIMIT);
 }
@@ -345,6 +360,90 @@ function getImageBlocksFromAttachments(
   return blocks;
 }
 
+function getUserDisplayName(message: Message): string {
+  return (
+    message.member?.displayName ??
+    message.author.globalName ??
+    message.author.username ??
+    message.author.tag
+  );
+}
+
+function getBotDisplayName(): string {
+  return (
+    client.user?.globalName ??
+    client.user?.username ??
+    client.user?.tag ??
+    'Claude Bot'
+  );
+}
+
+function formatAuthoredContent(authorName: string, content: string): string {
+  const normalized = content.trim();
+  const finalContent = normalized.length ? normalized : '(empty message)';
+  return `<${authorName}>: ${finalContent}`;
+}
+
+async function bootstrapHistory(): Promise<void> {
+  const result = countMessagesStmt.get();
+  const count = result?.count ?? 0;
+  if (count > 0) {
+    return;
+  }
+
+  if (!MAIN_CHANNEL_ID) {
+    console.warn('Cannot bootstrap history: MAIN_CHANNEL_ID is unset.');
+    return;
+  }
+
+  try {
+    const channel = await client.channels.fetch(MAIN_CHANNEL_ID);
+    if (!channel || !channel.isTextBased()) {
+      console.warn(
+        `Unable to bootstrap history: channel ${MAIN_CHANNEL_ID} is not text-based or could not be fetched.`,
+      );
+      return;
+    }
+
+    const fetched = await channel.messages.fetch({
+      limit: BOOTSTRAP_MESSAGE_LIMIT,
+    });
+    const sortedMessages = [...fetched.values()].sort(
+      (a, b) => a.createdTimestamp - b.createdTimestamp,
+    );
+
+    console.log(
+      `Bootstrapping ${sortedMessages.length} historical message${
+        sortedMessages.length === 1 ? '' : 's'
+      } from channel ${MAIN_CHANNEL_ID}`,
+    );
+
+    for (const msg of sortedMessages) {
+      const isAssistant =
+        Boolean(client.user) && msg.author.id === client.user?.id;
+      const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
+      const attachmentSummary = buildAttachmentSummary(msg.attachments);
+      const messageContent = msg.content || '(empty message)';
+      const storedContent = attachmentSummary
+        ? `${messageContent}\n${attachmentSummary}`
+        : messageContent;
+      const authorName = isAssistant
+        ? getBotDisplayName()
+        : getUserDisplayName(msg);
+
+      saveMessage(
+        msg.channel.id,
+        role,
+        msg.author.id,
+        formatAuthoredContent(authorName, storedContent),
+        msg.createdTimestamp,
+      );
+    }
+  } catch (err) {
+    console.error('Failed to bootstrap message history:', err);
+  }
+}
+
 type TypingCapableChannel = Message['channel'] & {
   sendTyping: () => Promise<void>;
 };
@@ -401,8 +500,13 @@ function hasSend(channel: Message['channel']): channel is SendCapableChannel {
 }
 
 // ---------- Events ----------
-client.once(Events.ClientReady, (c) => {
+client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
+  try {
+    await bootstrapHistory();
+  } catch (err) {
+    console.error('Bootstrap history failed:', err);
+  }
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -412,12 +516,20 @@ client.on(Events.MessageCreate, async (message) => {
     const userContent = message.content || '(empty message)';
     const canCacheUserMessage = isInScope(message) && !message.author.bot;
     const attachmentSummary = buildAttachmentSummary(message.attachments);
-    const storedUserContent = attachmentSummary
-      ? `${userContent}\n${attachmentSummary}`
-      : userContent;
+    const userDisplayName = getUserDisplayName(message);
+    const storedUserContent = formatAuthoredContent(
+      userDisplayName,
+      attachmentSummary ? `${userContent}\n${attachmentSummary}` : userContent,
+    );
 
     if (canCacheUserMessage) {
-      saveMessage(channelId, 'user', message.author.id, storedUserContent);
+      saveMessage(
+        channelId,
+        'user',
+        message.author.id,
+        storedUserContent,
+        message.createdTimestamp,
+      );
     }
 
     if (!shouldRespond(message)) return;
@@ -438,10 +550,17 @@ client.on(Events.MessageCreate, async (message) => {
     // Send reply (chunked to satisfy Discord's message length limit)
     const replyChunks = chunkReplyText(replyText);
     let lastSent: Message | null = null;
+    const botDisplayName = getBotDisplayName();
     if (replyChunks.length > 0) {
       const [firstChunk, ...restChunks] = replyChunks;
       lastSent = await message.reply(firstChunk);
-      saveMessage(channelId, 'assistant', lastSent.author.id, firstChunk);
+      saveMessage(
+        channelId,
+        'assistant',
+        lastSent.author.id,
+        formatAuthoredContent(botDisplayName, firstChunk),
+        lastSent.createdTimestamp,
+      );
 
       for (const chunk of restChunks) {
         if (hasSend(message.channel)) {
@@ -449,7 +568,13 @@ client.on(Events.MessageCreate, async (message) => {
         } else {
           lastSent = await message.reply(chunk);
         }
-        saveMessage(channelId, 'assistant', lastSent.author.id, chunk);
+        saveMessage(
+          channelId,
+          'assistant',
+          lastSent.author.id,
+          formatAuthoredContent(botDisplayName, chunk),
+          lastSent.createdTimestamp,
+        );
       }
     }
 
