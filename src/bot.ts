@@ -323,13 +323,18 @@ client.once(Events.ClientReady, (c) => {
 client.on(Events.MessageCreate, async (message) => {
   let stopTyping: (() => void) | null = null;
   try {
-    if (!shouldRespond(message)) return;
-
     const channelId = message.channel.id;
     const userContent = message.content || '(empty message)';
+    const canCacheUserMessage = isInScope(message) && !message.author.bot;
+
+    if (canCacheUserMessage) {
+      saveMessage(channelId, 'user', message.author.id, userContent);
+    }
+
+    if (!shouldRespond(message)) return;
 
     // Save user message for this channel/thread context
-    saveMessage(channelId, 'user', message.author.id, userContent);
+    // (already cached above when canCacheUserMessage true)
 
     // Build conversation (recent history + this new message)
     const conversation = buildConversation(channelId);
