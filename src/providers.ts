@@ -11,7 +11,7 @@ import { ClaudeContentBlock, ImageBlock, SimpleMessage, AIResponse } from './typ
 type ProviderInitOptions = {
   provider: string;
   systemPrompt: string;
-  prefillCommand: string;
+  prefillCommand?: string;
   temperature: number;
   maxTokens: number;
   anthropicModel: string;
@@ -41,7 +41,7 @@ export function createAIProvider(options: ProviderInitOptions): AIProvider {
 class AnthropicProvider implements AIProvider {
   private client: Anthropic;
   private systemPrompt: string;
-  private prefillCommand: string;
+  private prefillCommand?: string;
   private temperature: number;
   private maxTokens: number;
   private model: string;
@@ -78,12 +78,14 @@ class AnthropicProvider implements AIProvider {
     const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
     const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
 
-    const commandBlocks: ClaudeContentBlock[] = [
-      {
-        type: 'text',
-        text: this.prefillCommand,
-      },
-    ];
+    const commandBlocks: ClaudeContentBlock[] = this.prefillCommand
+      ? [
+          {
+            type: 'text',
+            text: this.prefillCommand,
+          },
+        ]
+      : [];
 
     const conversationBlocks: ClaudeContentBlock[] = [];
     if (transcriptText) {
@@ -96,12 +98,14 @@ class AnthropicProvider implements AIProvider {
       conversationBlocks.push(...imageBlocks);
     }
 
-    const messagesPayload: { role: 'user' | 'assistant'; content: ClaudeContentBlock[] }[] = [
-      {
+    const messagesPayload: { role: 'user' | 'assistant'; content: ClaudeContentBlock[] }[] = [];
+
+    if (commandBlocks.length > 0) {
+      messagesPayload.push({
         role: 'user',
         content: commandBlocks,
-      },
-    ];
+      });
+    }
 
     if (conversationBlocks.length > 0) {
       messagesPayload.push({
@@ -157,7 +161,7 @@ class AnthropicProvider implements AIProvider {
 class OpenAIProvider implements AIProvider {
   private client: OpenAI;
   private systemPrompt: string;
-  private prefillCommand: string;
+  private prefillCommand?: string;
   private temperature: number;
   private maxTokens: number;
   private model: string;
@@ -193,22 +197,22 @@ class OpenAIProvider implements AIProvider {
       });
     }
 
-    const commandContent: ChatCompletionContentPart[] = [
-      {
-        type: 'text',
-        text: this.prefillCommand,
-      },
-    ];
-
-    messages.push({
-      role: 'user',
-      content: commandContent,
-    });
+    if (this.prefillCommand) {
+      const commandContent: ChatCompletionContentPart[] = [
+        {
+          type: 'text',
+          text: this.prefillCommand,
+        },
+      ];
+      messages.push({
+        role: 'user',
+        content: commandContent,
+      });
+    }
 
     const conversationParts = buildOpenAIConversationParts(
       transcriptText,
       imageBlocks,
-      botDisplayName,
     );
     if (conversationParts.length > 0) {
       messages.push({
@@ -216,6 +220,16 @@ class OpenAIProvider implements AIProvider {
         content: conversationParts,
       });
     }
+
+    messages.push({
+      role: 'assistant',
+      content: [
+        {
+          type: 'text',
+          text: `${botDisplayName}:`,
+        },
+      ],
+    });
 
     const stream = await this.client.chat.completions.create({
       model: this.model,
@@ -300,7 +314,6 @@ function buildTranscript(conversation: SimpleMessage[]): string {
 function buildOpenAIConversationParts(
   transcriptText: string,
   imageBlocks: ImageBlock[],
-  botDisplayName: string,
 ): ChatCompletionContentPart[] {
   const parts: ChatCompletionContentPart[] = [];
   if (transcriptText) {
@@ -317,11 +330,6 @@ function buildOpenAIConversationParts(
         url: block.source.url,
       },
     } as ChatCompletionContentPart);
-  });
-
-  parts.push({
-    type: 'text',
-    text: `${botDisplayName}:`,
   });
 
   return parts;

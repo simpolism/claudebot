@@ -18,11 +18,10 @@ const APPROX_CHARS_PER_TOKEN = parseFloat(process.env.APPROX_CHARS_PER_TOKEN || 
 const DISCORD_MESSAGE_LIMIT = 2000;
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '1024', 10);
 const TEMPERATURE = parseFloat(process.env.TEMPERATURE || '1');
+const CLI_SIM_MODE = parseBooleanFlag(process.env.CLI_SIM_MODE);
 const DEFAULT_SYSTEM_PROMPT = 'The assistant is in CLI simulation mode, and responds to the user\'s CLI commands only with the output of the command.';
-const PREFILL_COMMAND = '<cmd>cat untitled.txt</cmd>';
-const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT !== undefined
-    ? process.env.SYSTEM_PROMPT
-    : DEFAULT_SYSTEM_PROMPT;
+const SYSTEM_PROMPT = CLI_SIM_MODE ? DEFAULT_SYSTEM_PROMPT : '';
+const PREFILL_COMMAND = CLI_SIM_MODE ? '<cmd>cat untitled.txt</cmd>' : undefined;
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'moonshotai/kimi-k2-instruct-0905';
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
@@ -66,6 +65,19 @@ const pruneOldMessagesStmt = db.prepare(`
 const countMessagesStmt = db.prepare(`
   SELECT COUNT(*) as count FROM messages
 `);
+function parseBooleanFlag(value) {
+    if (!value)
+        return false;
+    switch (value.trim().toLowerCase()) {
+        case '1':
+        case 'true':
+        case 'yes':
+        case 'on':
+            return true;
+        default:
+            return false;
+    }
+}
 function saveMessage(channelId, role, authorId, content, createdAt) {
     insertMessageStmt.run(channelId, role, authorId, content, createdAt ?? Date.now());
     // keep only last N per channel/thread

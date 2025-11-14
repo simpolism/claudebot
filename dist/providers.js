@@ -43,12 +43,14 @@ class AnthropicProvider {
             : undefined;
         const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
         const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
-        const commandBlocks = [
-            {
-                type: 'text',
-                text: this.prefillCommand,
-            },
-        ];
+        const commandBlocks = this.prefillCommand
+            ? [
+                {
+                    type: 'text',
+                    text: this.prefillCommand,
+                },
+            ]
+            : [];
         const conversationBlocks = [];
         if (transcriptText) {
             conversationBlocks.push({
@@ -59,12 +61,13 @@ class AnthropicProvider {
         if (imageBlocks.length > 0) {
             conversationBlocks.push(...imageBlocks);
         }
-        const messagesPayload = [
-            {
+        const messagesPayload = [];
+        if (commandBlocks.length > 0) {
+            messagesPayload.push({
                 role: 'user',
                 content: commandBlocks,
-            },
-        ];
+            });
+        }
         if (conversationBlocks.length > 0) {
             messagesPayload.push({
                 role: 'user',
@@ -140,23 +143,34 @@ class OpenAIProvider {
                 content: trimmedSystemPrompt,
             });
         }
-        const commandContent = [
-            {
-                type: 'text',
-                text: this.prefillCommand,
-            },
-        ];
-        messages.push({
-            role: 'user',
-            content: commandContent,
-        });
-        const conversationParts = buildOpenAIConversationParts(transcriptText, imageBlocks, botDisplayName);
+        if (this.prefillCommand) {
+            const commandContent = [
+                {
+                    type: 'text',
+                    text: this.prefillCommand,
+                },
+            ];
+            messages.push({
+                role: 'user',
+                content: commandContent,
+            });
+        }
+        const conversationParts = buildOpenAIConversationParts(transcriptText, imageBlocks);
         if (conversationParts.length > 0) {
             messages.push({
                 role: 'user',
                 content: conversationParts,
             });
         }
+        messages.push({
+            role: 'assistant',
+            content: [
+                {
+                    type: 'text',
+                    text: `${botDisplayName}:`,
+                },
+            ],
+        });
         const stream = await this.client.chat.completions.create({
             model: this.model,
             temperature: this.temperature,
@@ -226,7 +240,7 @@ function buildTranscript(conversation) {
         .join('\n')
         .trim();
 }
-function buildOpenAIConversationParts(transcriptText, imageBlocks, botDisplayName) {
+function buildOpenAIConversationParts(transcriptText, imageBlocks) {
     const parts = [];
     if (transcriptText) {
         parts.push({
@@ -241,10 +255,6 @@ function buildOpenAIConversationParts(transcriptText, imageBlocks, botDisplayNam
                 url: block.source.url,
             },
         });
-    });
-    parts.push({
-        type: 'text',
-        text: `${botDisplayName}:`,
     });
     return parts;
 }

@@ -116,6 +116,16 @@ Each thread under that channel becomes its own Claude context.
 
 This gets **prompt-cached** on Anthropic’s side, so feel free to make it long.
 
+### CLI Simulation Mode
+
+Set `CLI_SIM_MODE=true` to switch the bot into the classic “CLI simulation” persona from the original **Infinite Backrooms** project. In this mode the bot:
+
+* Sends a CLI-style system prompt (`"The assistant is in CLI simulation mode…"`).
+* Injects `<cmd>cat untitled.txt</cmd>` as a *user* message so the latest transcript is framed as terminal output.
+* Prefills the assistant reply with `Claude Bot:` to force the model to keep “typing” as the simulated CLI before appending new output.
+
+This trick keeps the conversation hidden inside the faux terminal buffer, which makes some providers more verbose/creative without leaving “CLI mode.” Leave `CLI_SIM_MODE` unset (or false) for normal Discord behavior.
+
 ---
 
 ## ▶️ Running the bot
