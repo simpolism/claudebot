@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import {
+  Attachment,
   ChannelType,
   Client,
   Events,
@@ -93,6 +94,21 @@ type SimpleMessage = {
   content: string;
 };
 
+type ImageBlock = {
+  type: 'image';
+  source: {
+    type: 'url';
+    url: string;
+  };
+};
+
+type TextBlock = {
+  type: 'text';
+  text: string;
+};
+
+type ClaudeContentBlock = TextBlock | ImageBlock;
+
 // ---------- Anthropic (Claude) client with prompt caching beta ----------
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -168,7 +184,10 @@ function buildConversation(channelId: string): SimpleMessage[] {
 }
 
 // Call Claude with Anthropic prompt caching on the system prompt
-async function callClaude(conversation: SimpleMessage[]): Promise<string> {
+async function callClaude(
+  conversation: SimpleMessage[],
+  imageBlocks: ImageBlock[] = [],
+): Promise<string> {
   const trimmedSystemPrompt = SYSTEM_PROMPT.trim();
   const systemBlocks = trimmedSystemPrompt
     ? [
@@ -180,19 +199,36 @@ async function callClaude(conversation: SimpleMessage[]): Promise<string> {
       ]
     : undefined;
 
-  const response = await anthropic.messages.create(
-    {
-      model: CLAUDE_MODEL,
-      max_tokens: MAX_TOKENS,
-      temperature: TEMPERATURE,
-      // SYSTEM_PROMPT can be long; we mark it cacheable if present
-      system: systemBlocks,
-      messages: conversation.map((msg) => ({
-        role: msg.role,
-        content: msg.content,
-      })),
-    },
-  );
+  const messagesPayload = conversation.map((msg, index) => {
+    const contentBlocks: ClaudeContentBlock[] = [
+      {
+        type: 'text',
+        text: msg.content,
+      },
+    ];
+
+    if (
+      imageBlocks.length > 0 &&
+      index === conversation.length - 1 &&
+      msg.role === 'user'
+    ) {
+      contentBlocks.push(...imageBlocks);
+    }
+
+    return {
+      role: msg.role,
+      content: contentBlocks,
+    };
+  });
+
+  const response = await anthropic.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: MAX_TOKENS,
+    temperature: TEMPERATURE,
+    // SYSTEM_PROMPT can be long; we mark it cacheable if present
+    system: systemBlocks,
+    messages: messagesPayload,
+  });
 
   const text =
     (response.content || [])
@@ -258,6 +294,55 @@ function chunkReplyText(text: string): string[] {
   }
 
   return chunks;
+}
+
+function isImageAttachment(attachment: Attachment): boolean {
+  const contentType = attachment.contentType ?? '';
+  return contentType.startsWith('image/') && Boolean(attachment.url);
+}
+
+function buildAttachmentSummary(
+  attachments: Message['attachments'],
+): string | null {
+  const lines: string[] = [];
+
+  attachments.forEach((attachment) => {
+    if (!isImageAttachment(attachment)) return;
+
+    const descriptorParts = [
+      attachment.name || 'image',
+      attachment.contentType || 'image',
+    ];
+
+    if (attachment.size) {
+      const sizeKB = (attachment.size / 1024).toFixed(1);
+      descriptorParts.push(`${sizeKB}KB`);
+    }
+
+    lines.push(`[Image: ${descriptorParts.join(' • ')}] ${attachment.url}`);
+  });
+
+  return lines.length ? lines.join('\n') : null;
+}
+
+function getImageBlocksFromAttachments(
+  attachments: Message['attachments'],
+): ImageBlock[] {
+  const blocks: ImageBlock[] = [];
+
+  attachments.forEach((attachment) => {
+    if (!isImageAttachment(attachment)) return;
+
+    blocks.push({
+      type: 'image',
+      source: {
+        type: 'url',
+        url: attachment.url,
+      },
+    });
+  });
+
+  return blocks;
 }
 
 type TypingCapableChannel = Message['channel'] & {
@@ -326,9 +411,13 @@ client.on(Events.MessageCreate, async (message) => {
     const channelId = message.channel.id;
     const userContent = message.content || '(empty message)';
     const canCacheUserMessage = isInScope(message) && !message.author.bot;
+    const attachmentSummary = buildAttachmentSummary(message.attachments);
+    const storedUserContent = attachmentSummary
+      ? `${userContent}\n${attachmentSummary}`
+      : userContent;
 
     if (canCacheUserMessage) {
-      saveMessage(channelId, 'user', message.author.id, userContent);
+      saveMessage(channelId, 'user', message.author.id, storedUserContent);
     }
 
     if (!shouldRespond(message)) return;
@@ -341,7 +430,8 @@ client.on(Events.MessageCreate, async (message) => {
 
     // Call Claude
     stopTyping = startTypingIndicator(message.channel);
-    const replyText = await callClaude(conversation);
+    const imageBlocks = getImageBlocksFromAttachments(message.attachments);
+    const replyText = await callClaude(conversation, imageBlocks);
     stopTyping();
     stopTyping = null;
 
