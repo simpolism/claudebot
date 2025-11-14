@@ -169,19 +169,24 @@ function buildConversation(channelId: string): SimpleMessage[] {
 
 // Call Claude with Anthropic prompt caching on the system prompt
 async function callClaude(conversation: SimpleMessage[]): Promise<string> {
+  const trimmedSystemPrompt = SYSTEM_PROMPT.trim();
+  const systemBlocks = trimmedSystemPrompt
+    ? [
+        {
+          type: 'text' as const,
+          text: trimmedSystemPrompt,
+          cache_control: { type: 'ephemeral' as const },
+        },
+      ]
+    : undefined;
+
   const response = await anthropic.messages.create(
     {
       model: CLAUDE_MODEL,
       max_tokens: MAX_TOKENS,
       temperature: TEMPERATURE,
-      // SYSTEM_PROMPT can be long; we mark it cacheable
-      system: [
-        {
-          type: 'text' as const,
-          text: SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral' as const },
-        },
-      ],
+      // SYSTEM_PROMPT can be long; we mark it cacheable if present
+      system: systemBlocks,
       messages: conversation.map((msg) => ({
         role: msg.role,
         content: msg.content,
@@ -255,12 +260,68 @@ function chunkReplyText(text: string): string[] {
   return chunks;
 }
 
+type TypingCapableChannel = Message['channel'] & {
+  sendTyping: () => Promise<void>;
+};
+
+function hasTyping(channel: Message['channel']): channel is TypingCapableChannel {
+  return !!channel && typeof (channel as TypingCapableChannel).sendTyping === 'function';
+}
+
+function startTypingIndicator(channel: Message['channel']): () => void {
+  if (!hasTyping(channel)) {
+    return () => {};
+  }
+
+  const textChannel: TypingCapableChannel = channel;
+  let active = true;
+  let timeout: NodeJS.Timeout | null = null;
+
+  const scheduleNext = () => {
+    if (!active) return;
+    timeout = setTimeout(() => {
+      void sendTyping();
+    }, 9000);
+  };
+
+  const sendTyping = async () => {
+    if (!active) return;
+    try {
+      await textChannel.sendTyping();
+    } catch (err) {
+      console.warn('Failed to send typing indicator:', err);
+      active = false;
+      return;
+    }
+    scheduleNext();
+  };
+
+  void sendTyping();
+
+  return () => {
+    active = false;
+    if (timeout) {
+      clearTimeout(timeout);
+      timeout = null;
+    }
+  };
+}
+
+type SendCapableChannel = Message['channel'] & {
+  send: (content: string) => Promise<Message>;
+};
+
+function hasSend(channel: Message['channel']): channel is SendCapableChannel {
+  return !!channel && typeof (channel as SendCapableChannel).send === 'function';
+}
+
 // ---------- Events ----------
 client.once(Events.ClientReady, (c) => {
   console.log(`Logged in as ${c.user.tag}`);
 });
 
 client.on(Events.MessageCreate, async (message) => {
+  let stopTyping: (() => void) | null = null;
   try {
     if (!shouldRespond(message)) return;
 
@@ -274,14 +335,27 @@ client.on(Events.MessageCreate, async (message) => {
     const conversation = buildConversation(channelId);
 
     // Call Claude
+    stopTyping = startTypingIndicator(message.channel);
     const replyText = await callClaude(conversation);
+    stopTyping();
+    stopTyping = null;
 
     // Send reply (chunked to satisfy Discord's message length limit)
     const replyChunks = chunkReplyText(replyText);
     let lastSent: Message | null = null;
-    for (const chunk of replyChunks) {
-      lastSent = await message.reply(chunk);
-      saveMessage(channelId, 'assistant', lastSent.author.id, chunk);
+    if (replyChunks.length > 0) {
+      const [firstChunk, ...restChunks] = replyChunks;
+      lastSent = await message.reply(firstChunk);
+      saveMessage(channelId, 'assistant', lastSent.author.id, firstChunk);
+
+      for (const chunk of restChunks) {
+        if (hasSend(message.channel)) {
+          lastSent = await message.channel.send(chunk);
+        } else {
+          lastSent = await message.reply(chunk);
+        }
+        saveMessage(channelId, 'assistant', lastSent.author.id, chunk);
+      }
     }
 
     console.log(
@@ -298,6 +372,8 @@ client.on(Events.MessageCreate, async (message) => {
     } catch {
       // ignore
     }
+  } finally {
+    stopTyping?.();
   }
 });
 
