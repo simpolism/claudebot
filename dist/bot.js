@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const discord_js_1 = require("discord.js");
 const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
+const error_1 = require("@anthropic-ai/sdk/error");
 const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
 // ---------- Config ----------
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -18,7 +19,11 @@ const APPROX_CHARS_PER_TOKEN = parseFloat(process.env.APPROX_CHARS_PER_TOKEN || 
 const DISCORD_MESSAGE_LIMIT = 2000;
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '1024', 10);
 const TEMPERATURE = parseFloat(process.env.TEMPERATURE || '1');
-const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || '';
+const DEFAULT_SYSTEM_PROMPT = 'The assistant is in CLI simulation mode, and responds to the user\'s CLI commands only with the output of the command.';
+const PREFILL_COMMAND = '<cmd>cat untitled.txt</cmd>';
+const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT && process.env.SYSTEM_PROMPT.trim().length > 0
+    ? process.env.SYSTEM_PROMPT
+    : DEFAULT_SYSTEM_PROMPT;
 // ---------- SQLite setup (file-based cache) ----------
 const db = new better_sqlite3_1.default('claude-cache.sqlite');
 db.pragma('journal_mode = WAL');
@@ -118,7 +123,6 @@ function buildConversation(channelId) {
     }));
     return trimConversation(messages);
 }
-// Call Claude with Anthropic prompt caching on the system prompt
 async function callClaude(conversation, botDisplayName, imageBlocks = []) {
     const trimmedSystemPrompt = SYSTEM_PROMPT.trim();
     const systemBlocks = trimmedSystemPrompt
@@ -137,32 +141,75 @@ async function callClaude(conversation, botDisplayName, imageBlocks = []) {
     const promptWithBotName = transcriptText
         ? `${transcriptText}\n${botDisplayName}:`
         : `${botDisplayName}:`;
-    const contentBlocks = [
+    const conversationBlocks = [
         {
             type: 'text',
             text: promptWithBotName,
         },
         ...imageBlocks,
     ];
+    const commandBlocks = [
+        {
+            type: 'text',
+            text: PREFILL_COMMAND,
+        },
+    ];
     const messagesPayload = [
         {
             role: 'user',
-            content: contentBlocks,
+            content: commandBlocks,
+        },
+        {
+            role: 'user',
+            content: conversationBlocks,
         },
     ];
-    const response = await anthropic.messages.create({
+    const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
+    const fragmentationRegex = buildFragmentationRegex(trackedSpeakers);
+    const stream = anthropic.messages.stream({
         model: CLAUDE_MODEL,
         max_tokens: MAX_TOKENS,
         temperature: TEMPERATURE,
-        // SYSTEM_PROMPT can be long; we mark it cacheable if present
         system: systemBlocks,
         messages: messagesPayload,
     });
-    const text = (response.content || [])
-        .map((block) => block.text ?? '')
-        .join('\n')
-        .trim() || '(no response text)';
-    return text;
+    let aggregatedText = '';
+    let truncated = false;
+    let truncatedSpeaker;
+    let abortedByGuard = false;
+    stream.on('text', (textDelta) => {
+        if (truncated)
+            return;
+        aggregatedText += textDelta;
+        if (!fragmentationRegex)
+            return;
+        fragmentationRegex.lastIndex = 0;
+        const match = fragmentationRegex.exec(aggregatedText);
+        if (!match)
+            return;
+        truncated = true;
+        truncatedSpeaker = match[1]?.trim();
+        aggregatedText = aggregatedText.slice(0, match.index).trimEnd();
+        abortedByGuard = true;
+        stream.controller.abort();
+    });
+    try {
+        await stream.finalMessage();
+    }
+    catch (err) {
+        if (!(abortedByGuard && err instanceof error_1.APIUserAbortError)) {
+            throw err;
+        }
+    }
+    const text = aggregatedText.trim() || '(no response text)';
+    if (truncated && truncatedSpeaker) {
+        console.warn(`Claude output truncated after detecting speaker "${truncatedSpeaker}".`);
+    }
+    return {
+        text,
+        truncated,
+        truncatedSpeaker,
+    };
 }
 function estimateTokens(text) {
     return Math.ceil(text.length / Math.max(APPROX_CHARS_PER_TOKEN, 1));
@@ -242,13 +289,12 @@ function getImageBlocksFromAttachments(attachments) {
     });
     return blocks;
 }
-function getUserDisplayName(message) {
-    return (message.member?.displayName ??
-        message.author.globalName ??
+function getUserGlobalName(message) {
+    return (message.author.globalName ??
         message.author.username ??
         message.author.tag);
 }
-function getBotDisplayName() {
+function getBotGlobalName() {
     return (client.user?.globalName ??
         client.user?.username ??
         client.user?.tag ??
@@ -258,6 +304,37 @@ function formatAuthoredContent(authorName, content) {
     const normalized = content.trim();
     const finalContent = normalized.length ? normalized : '(empty message)';
     return `${authorName}: ${finalContent}`;
+}
+function escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function extractAuthorName(content) {
+    const colonIndex = content.indexOf(':');
+    if (colonIndex === -1) {
+        return null;
+    }
+    return content.slice(0, colonIndex).trim();
+}
+function getTrackedUserNames(conversation, botDisplayName) {
+    const normalizedBot = botDisplayName.toLowerCase();
+    const names = new Set();
+    conversation.forEach((message) => {
+        if (message.role !== 'user')
+            return;
+        const authorName = extractAuthorName(message.content);
+        if (!authorName)
+            return;
+        if (authorName.toLowerCase() === normalizedBot)
+            return;
+        names.add(authorName);
+    });
+    return [...names];
+}
+function buildFragmentationRegex(names) {
+    if (names.length === 0)
+        return null;
+    const escapedNames = names.map(escapeRegExp).join('|');
+    return new RegExp(`(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`, 'i');
 }
 async function bootstrapHistory() {
     const result = countMessagesStmt.get();
@@ -304,8 +381,8 @@ async function bootstrapHistory() {
                 ? `${messageContent}\n${attachmentSummary}`
                 : messageContent;
             const authorName = isAssistant
-                ? getBotDisplayName()
-                : getUserDisplayName(msg);
+                ? getBotGlobalName()
+                : getUserGlobalName(msg);
             saveMessage(msg.channel.id, role, msg.author.id, formatAuthoredContent(authorName, storedContent), msg.createdTimestamp);
         }
     }
@@ -372,14 +449,14 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         const userContent = message.content || '(empty message)';
         const canCacheUserMessage = isInScope(message) && !message.author.bot;
         const attachmentSummary = buildAttachmentSummary(message.attachments);
-        const userDisplayName = getUserDisplayName(message);
+        const userDisplayName = getUserGlobalName(message);
         const storedUserContent = formatAuthoredContent(userDisplayName, attachmentSummary ? `${userContent}\n${attachmentSummary}` : userContent);
         if (canCacheUserMessage) {
             saveMessage(channelId, 'user', message.author.id, storedUserContent, message.createdTimestamp);
         }
         if (!shouldRespond(message))
             return;
-        const botDisplayName = getBotDisplayName();
+        const botDisplayName = getBotGlobalName();
         // Save user message for this channel/thread context
         // (already cached above when canCacheUserMessage true)
         // Build conversation (recent history + this new message)
@@ -387,7 +464,8 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         // Call Claude
         stopTyping = startTypingIndicator(message.channel);
         const imageBlocks = getImageBlocksFromAttachments(message.attachments);
-        const replyText = await callClaude(conversation, botDisplayName, imageBlocks);
+        const claudeReply = await callClaude(conversation, botDisplayName, imageBlocks);
+        const replyText = claudeReply.text;
         stopTyping();
         stopTyping = null;
         // Send reply (chunked to satisfy Discord's message length limit)

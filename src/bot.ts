@@ -11,6 +11,7 @@ import {
   PublicThreadChannel,
 } from 'discord.js';
 import Anthropic from '@anthropic-ai/sdk';
+import { APIUserAbortError } from '@anthropic-ai/sdk/error';
 import Database from 'better-sqlite3';
 
 // ---------- Config ----------
@@ -36,8 +37,13 @@ const APPROX_CHARS_PER_TOKEN = parseFloat(
 const DISCORD_MESSAGE_LIMIT = 2000;
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '1024', 10);
 const TEMPERATURE = parseFloat(process.env.TEMPERATURE || '1');
+const DEFAULT_SYSTEM_PROMPT =
+  'The assistant is in CLI simulation mode, and responds to the user\'s CLI commands only with the output of the command.';
+const PREFILL_COMMAND = '<cmd>cat untitled.txt</cmd>';
 const SYSTEM_PROMPT =
-  process.env.SYSTEM_PROMPT || '';
+  process.env.SYSTEM_PROMPT && process.env.SYSTEM_PROMPT.trim().length > 0
+    ? process.env.SYSTEM_PROMPT
+    : DEFAULT_SYSTEM_PROMPT;
 
 // ---------- SQLite setup (file-based cache) ----------
 const db = new Database('claude-cache.sqlite');
@@ -199,11 +205,17 @@ function buildConversation(channelId: string): SimpleMessage[] {
 }
 
 // Call Claude with Anthropic prompt caching on the system prompt
+type ClaudeReply = {
+  text: string;
+  truncated: boolean;
+  truncatedSpeaker?: string;
+};
+
 async function callClaude(
   conversation: SimpleMessage[],
   botDisplayName: string,
   imageBlocks: ImageBlock[] = [],
-): Promise<string> {
+): Promise<ClaudeReply> {
   const trimmedSystemPrompt = SYSTEM_PROMPT.trim();
   const systemBlocks = trimmedSystemPrompt
     ? [
@@ -223,7 +235,7 @@ async function callClaude(
     ? `${transcriptText}\n${botDisplayName}:`
     : `${botDisplayName}:`;
 
-  const contentBlocks: ClaudeContentBlock[] = [
+  const conversationBlocks: ClaudeContentBlock[] = [
     {
       type: 'text',
       text: promptWithBotName,
@@ -231,29 +243,73 @@ async function callClaude(
     ...imageBlocks,
   ];
 
-  const messagesPayload = [
+  const commandBlocks: ClaudeContentBlock[] = [
     {
-      role: 'user' as const,
-      content: contentBlocks,
+      type: 'text',
+      text: PREFILL_COMMAND,
     },
   ];
 
-  const response = await anthropic.messages.create({
+  const messagesPayload = [
+    {
+      role: 'user' as const,
+      content: commandBlocks,
+    },
+    {
+      role: 'user' as const,
+      content: conversationBlocks,
+    },
+  ];
+
+  const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
+  const fragmentationRegex = buildFragmentationRegex(trackedSpeakers);
+  const stream = anthropic.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: MAX_TOKENS,
     temperature: TEMPERATURE,
-    // SYSTEM_PROMPT can be long; we mark it cacheable if present
     system: systemBlocks,
     messages: messagesPayload,
   });
 
-  const text =
-    (response.content || [])
-      .map((block: any) => block.text ?? '')
-      .join('\n')
-      .trim() || '(no response text)';
+  let aggregatedText = '';
+  let truncated = false;
+  let truncatedSpeaker: string | undefined;
+  let abortedByGuard = false;
 
-  return text;
+  stream.on('text', (textDelta) => {
+    if (truncated) return;
+    aggregatedText += textDelta;
+    if (!fragmentationRegex) return;
+    fragmentationRegex.lastIndex = 0;
+    const match = fragmentationRegex.exec(aggregatedText);
+    if (!match) return;
+    truncated = true;
+    truncatedSpeaker = match[1]?.trim();
+    aggregatedText = aggregatedText.slice(0, match.index).trimEnd();
+    abortedByGuard = true;
+    stream.controller.abort();
+  });
+
+  try {
+    await stream.finalMessage();
+  } catch (err) {
+    if (!(abortedByGuard && err instanceof APIUserAbortError)) {
+      throw err;
+    }
+  }
+
+  const text = aggregatedText.trim() || '(no response text)';
+  if (truncated && truncatedSpeaker) {
+    console.warn(
+      `Claude output truncated after detecting speaker "${truncatedSpeaker}".`,
+    );
+  }
+
+  return {
+    text,
+    truncated,
+    truncatedSpeaker,
+  };
 }
 
 function estimateTokens(text: string): number {
@@ -362,16 +418,15 @@ function getImageBlocksFromAttachments(
   return blocks;
 }
 
-function getUserDisplayName(message: Message): string {
+function getUserGlobalName(message: Message): string {
   return (
-    message.member?.displayName ??
     message.author.globalName ??
     message.author.username ??
     message.author.tag
   );
 }
 
-function getBotDisplayName(): string {
+function getBotGlobalName(): string {
   return (
     client.user?.globalName ??
     client.user?.username ??
@@ -384,6 +439,43 @@ function formatAuthoredContent(authorName: string, content: string): string {
   const normalized = content.trim();
   const finalContent = normalized.length ? normalized : '(empty message)';
   return `${authorName}: ${finalContent}`;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractAuthorName(content: string): string | null {
+  const colonIndex = content.indexOf(':');
+  if (colonIndex === -1) {
+    return null;
+  }
+  return content.slice(0, colonIndex).trim();
+}
+
+function getTrackedUserNames(
+  conversation: SimpleMessage[],
+  botDisplayName: string,
+): string[] {
+  const normalizedBot = botDisplayName.toLowerCase();
+  const names = new Set<string>();
+  conversation.forEach((message) => {
+    if (message.role !== 'user') return;
+    const authorName = extractAuthorName(message.content);
+    if (!authorName) return;
+    if (authorName.toLowerCase() === normalizedBot) return;
+    names.add(authorName);
+  });
+  return [...names];
+}
+
+function buildFragmentationRegex(names: string[]): RegExp | null {
+  if (names.length === 0) return null;
+  const escapedNames = names.map(escapeRegExp).join('|');
+  return new RegExp(
+    `(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`,
+    'i',
+  );
 }
 
 async function bootstrapHistory(): Promise<void> {
@@ -446,8 +538,8 @@ async function bootstrapHistory(): Promise<void> {
         ? `${messageContent}\n${attachmentSummary}`
         : messageContent;
       const authorName = isAssistant
-        ? getBotDisplayName()
-        : getUserDisplayName(msg);
+        ? getBotGlobalName()
+        : getUserGlobalName(msg);
 
       saveMessage(
         msg.channel.id,
@@ -534,7 +626,7 @@ client.on(Events.MessageCreate, async (message) => {
     const userContent = message.content || '(empty message)';
     const canCacheUserMessage = isInScope(message) && !message.author.bot;
     const attachmentSummary = buildAttachmentSummary(message.attachments);
-    const userDisplayName = getUserDisplayName(message);
+    const userDisplayName = getUserGlobalName(message);
     const storedUserContent = formatAuthoredContent(
       userDisplayName,
       attachmentSummary ? `${userContent}\n${attachmentSummary}` : userContent,
@@ -552,7 +644,7 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (!shouldRespond(message)) return;
 
-    const botDisplayName = getBotDisplayName();
+    const botDisplayName = getBotGlobalName();
     // Save user message for this channel/thread context
     // (already cached above when canCacheUserMessage true)
 
@@ -562,11 +654,12 @@ client.on(Events.MessageCreate, async (message) => {
     // Call Claude
     stopTyping = startTypingIndicator(message.channel);
     const imageBlocks = getImageBlocksFromAttachments(message.attachments);
-    const replyText = await callClaude(
+    const claudeReply = await callClaude(
       conversation,
       botDisplayName,
       imageBlocks,
     );
+    const replyText = claudeReply.text;
     stopTyping();
     stopTyping = null;
 
