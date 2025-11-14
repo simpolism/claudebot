@@ -218,12 +218,6 @@ class OpenAIProvider implements AIProvider {
       content: `${botDisplayName}:`,
     });
 
-    console.log(
-      `[OpenAI] Starting stream with ${messages.length} message(s). Conversation parts: ${
-        transcriptText ? 'present' : 'empty'
-      }, images: ${imageBlocks.length}.`,
-    );
-
     const stream = await this.client.chat.completions.create({
       model: this.model,
       temperature: this.temperature,
@@ -239,19 +233,12 @@ class OpenAIProvider implements AIProvider {
       for await (const chunk of stream) {
         if (guard.truncated) break;
         const deltaText = extractOpenAIDelta(chunk);
-        if (!deltaText) {
-          console.log('[OpenAI] Received chunk without textual delta.');
-          continue;
-        }
-        console.log(
-          `[OpenAI] Delta chunk (${deltaText.length} chars): ${summarizeText(deltaText)}`,
-        );
+        if (!deltaText) continue;
         aggregatedText += deltaText;
         const checked = guard.inspect(aggregatedText);
         if (checked !== aggregatedText) {
           aggregatedText = checked;
           abortedByGuard = true;
-          console.warn('[OpenAI] Fragmentation guard triggered. Aborting stream.');
           stream.controller.abort();
           break;
         }
@@ -262,7 +249,6 @@ class OpenAIProvider implements AIProvider {
       }
     }
 
-    console.log(`[OpenAI] Final aggregated text length: ${aggregatedText.length}.`);
     return finalizeResponse(aggregatedText, guard);
   }
 }
@@ -360,13 +346,6 @@ function extractOpenAIDelta(chunk: ChatCompletionChunk): string {
       return '';
     })
     .join('');
-}
-
-function summarizeText(text: string, maxLength = 120): string {
-  if (text.length <= maxLength) {
-    return text;
-  }
-  return `${text.slice(0, maxLength)}…`;
 }
 
 function escapeRegExp(text: string): string {

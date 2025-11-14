@@ -161,7 +161,6 @@ class OpenAIProvider {
             role: 'assistant',
             content: `${botDisplayName}:`,
         });
-        console.log(`[OpenAI] Starting stream with ${messages.length} message(s). Conversation parts: ${transcriptText ? 'present' : 'empty'}, images: ${imageBlocks.length}.`);
         const stream = await this.client.chat.completions.create({
             model: this.model,
             temperature: this.temperature,
@@ -176,17 +175,13 @@ class OpenAIProvider {
                 if (guard.truncated)
                     break;
                 const deltaText = extractOpenAIDelta(chunk);
-                if (!deltaText) {
-                    console.log('[OpenAI] Received chunk without textual delta.');
+                if (!deltaText)
                     continue;
-                }
-                console.log(`[OpenAI] Delta chunk (${deltaText.length} chars): ${summarizeText(deltaText)}`);
                 aggregatedText += deltaText;
                 const checked = guard.inspect(aggregatedText);
                 if (checked !== aggregatedText) {
                     aggregatedText = checked;
                     abortedByGuard = true;
-                    console.warn('[OpenAI] Fragmentation guard triggered. Aborting stream.');
                     stream.controller.abort();
                     break;
                 }
@@ -197,7 +192,6 @@ class OpenAIProvider {
                 throw err;
             }
         }
-        console.log(`[OpenAI] Final aggregated text length: ${aggregatedText.length}.`);
         return finalizeResponse(aggregatedText, guard);
     }
 }
@@ -281,12 +275,6 @@ function extractOpenAIDelta(chunk) {
         return '';
     })
         .join('');
-}
-function summarizeText(text, maxLength = 120) {
-    if (text.length <= maxLength) {
-        return text;
-    }
-    return `${text.slice(0, maxLength)}…`;
 }
 function escapeRegExp(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
