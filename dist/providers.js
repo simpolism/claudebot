@@ -137,27 +137,22 @@ class OpenAIProvider {
         const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
         const trimmedSystemPrompt = this.systemPrompt.trim();
         const messages = [];
-        if (trimmedSystemPrompt) {
+        if (trimmedSystemPrompt?.length > 0) {
             messages.push({
                 role: 'system',
                 content: trimmedSystemPrompt,
             });
         }
-        if (this.prefillCommand) {
-            const commandContent = [
-                {
-                    type: 'text',
-                    text: this.prefillCommand,
-                },
-            ];
+        const trimmedPrefillCommand = this.prefillCommand.trim();
+        if (trimmedPrefillCommand?.length > 0) {
             messages.push({
                 role: 'user',
-                content: commandContent,
+                content: trimmedPrefillCommand,
             });
         }
         messages.push({
             role: 'assistant',
-            content: transcriptText + `\n${botDisplayName}:`,
+            content: transcriptText + `\n\n${botDisplayName}:`,
         });
         const stream = await this.client.chat.completions.create({
             model: this.model,

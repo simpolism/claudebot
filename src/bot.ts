@@ -41,7 +41,7 @@ const CLI_SIM_MODE = parseBooleanFlag(process.env.CLI_SIM_MODE);
 const DEFAULT_SYSTEM_PROMPT =
   'The assistant is in CLI simulation mode, and responds to the user\'s CLI commands only with the output of the command.';
 const SYSTEM_PROMPT = CLI_SIM_MODE ? DEFAULT_SYSTEM_PROMPT : '';
-const PREFILL_COMMAND = CLI_SIM_MODE ? '<cmd>cat untitled.txt</cmd>' : undefined;
+const PREFILL_COMMAND = CLI_SIM_MODE ? '<cmd>cat untitled.txt</cmd>' : '';
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
 const OPENAI_MODEL =
   process.env.OPENAI_MODEL || 'moonshotai/kimi-k2-instruct-0905';
