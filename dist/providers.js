@@ -198,12 +198,17 @@ class FragmentationGuard {
             return currentText;
         }
         this.regex.lastIndex = 0;
-        const match = this.regex.exec(currentText);
-        if (!match)
-            return currentText;
-        this.truncated = true;
-        this.truncatedSpeaker = match[1]?.trim();
-        return currentText.slice(0, match.index).trimEnd();
+        let match;
+        while ((match = this.regex.exec(currentText))) {
+            const matchIndex = match.index;
+            if (matchIndex === 0) {
+                continue;
+            }
+            this.truncated = true;
+            this.truncatedSpeaker = match[1]?.trim();
+            return currentText.slice(0, matchIndex).trimEnd();
+        }
+        return currentText;
     }
 }
 function finalizeResponse(text, guard) {
@@ -280,7 +285,7 @@ function buildFragmentationRegex(names) {
     if (names.length === 0)
         return null;
     const escapedNames = names.map(escapeRegExp).join('|');
-    return new RegExp(`(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`, 'i');
+    return new RegExp(`(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`, 'gi');
 }
 function isAbortError(error) {
     return error instanceof Error && error.name === 'AbortError';
