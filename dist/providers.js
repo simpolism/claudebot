@@ -21,6 +21,8 @@ class AnthropicProvider {
         this.temperature = options.temperature;
         this.maxTokens = options.maxTokens;
         this.model = options.anthropicModel;
+        this.maxContextTokens = options.maxContextTokens;
+        this.approxCharsPerToken = options.approxCharsPerToken;
         this.client = new sdk_1.default({
             apiKey: process.env.ANTHROPIC_API_KEY,
             defaultHeaders: {
@@ -30,7 +32,6 @@ class AnthropicProvider {
     }
     async send(params) {
         const { conversation, botDisplayName, imageBlocks } = params;
-        const transcriptText = buildTranscript(conversation);
         const trimmedSystemPrompt = this.systemPrompt.trim();
         const systemBlocks = trimmedSystemPrompt
             ? [
@@ -51,13 +52,7 @@ class AnthropicProvider {
                 },
             ]
             : [];
-        const conversationBlocks = [];
-        if (transcriptText) {
-            conversationBlocks.push({
-                type: 'text',
-                text: transcriptText,
-            });
-        }
+        const conversationBlocks = buildSegmentedConversationBlocks(conversation, this.maxContextTokens, this.approxCharsPerToken);
         if (imageBlocks.length > 0) {
             conversationBlocks.push(...imageBlocks);
         }
@@ -227,6 +222,55 @@ function buildTranscript(conversation) {
         .map((msg) => msg.content)
         .join('\n')
         .trim();
+}
+function buildSegmentedConversationBlocks(conversation, maxContextTokens, approxCharsPerToken) {
+    if (!conversation.length) {
+        return [];
+    }
+    const maxSegments = 3;
+    const targetTokensPerSegment = Math.max(1, Math.floor(maxContextTokens / maxSegments));
+    const segments = [];
+    let segmentBuffer = [];
+    let segmentTokens = 0;
+    conversation.forEach((message) => {
+        const line = message.content;
+        const estimatedTokens = estimateTokensApprox(line, approxCharsPerToken) + 4;
+        if (segmentBuffer.length > 0 &&
+            segments.length < maxSegments - 1 &&
+            segmentTokens + estimatedTokens > targetTokensPerSegment) {
+            segments.push(segmentBuffer.join('\n'));
+            segmentBuffer = [];
+            segmentTokens = 0;
+        }
+        segmentBuffer.push(line);
+        segmentTokens += estimatedTokens;
+    });
+    if (segmentBuffer.length > 0) {
+        segments.push(segmentBuffer.join('\n'));
+    }
+    return segments.map((segmentText, index) => {
+        const isLast = index === segments.length - 1;
+        const normalizedText = isLast
+            ? segmentText.trim()
+            : ensureTrailingNewline(segmentText);
+        const block = {
+            type: 'text',
+            text: normalizedText,
+        };
+        if (!isLast) {
+            block.cache_control = { type: 'ephemeral' };
+        }
+        return block;
+    });
+}
+function ensureTrailingNewline(text) {
+    if (text.endsWith('\n')) {
+        return text;
+    }
+    return `${text}\n`;
+}
+function estimateTokensApprox(text, approxCharsPerToken) {
+    return Math.ceil(text.length / Math.max(approxCharsPerToken, 1));
 }
 function extractOpenAIDelta(chunk) {
     if (!chunk?.choices?.length)

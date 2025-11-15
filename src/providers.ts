@@ -15,6 +15,8 @@ type ProviderInitOptions = {
   prefillCommand: string;
   temperature: number;
   maxTokens: number;
+  maxContextTokens: number;
+  approxCharsPerToken: number;
   anthropicModel: string;
   openaiModel: string;
   openaiBaseURL: string;
@@ -46,6 +48,8 @@ class AnthropicProvider implements AIProvider {
   private temperature: number;
   private maxTokens: number;
   private model: string;
+  private maxContextTokens: number;
+  private approxCharsPerToken: number;
 
   constructor(options: ProviderInitOptions) {
     this.systemPrompt = options.systemPrompt;
@@ -53,6 +57,8 @@ class AnthropicProvider implements AIProvider {
     this.temperature = options.temperature;
     this.maxTokens = options.maxTokens;
     this.model = options.anthropicModel;
+    this.maxContextTokens = options.maxContextTokens;
+    this.approxCharsPerToken = options.approxCharsPerToken;
     this.client = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
       defaultHeaders: {
@@ -63,7 +69,6 @@ class AnthropicProvider implements AIProvider {
 
   async send(params: ProviderRequest): Promise<AIResponse> {
     const { conversation, botDisplayName, imageBlocks } = params;
-    const transcriptText = buildTranscript(conversation);
     const trimmedSystemPrompt = this.systemPrompt.trim();
 
     const systemBlocks = trimmedSystemPrompt
@@ -88,13 +93,11 @@ class AnthropicProvider implements AIProvider {
         ]
       : [];
 
-    const conversationBlocks: ClaudeContentBlock[] = [];
-    if (transcriptText) {
-      conversationBlocks.push({
-        type: 'text',
-        text: transcriptText,
-      });
-    }
+    const conversationBlocks = buildSegmentedConversationBlocks(
+      conversation,
+      this.maxContextTokens,
+      this.approxCharsPerToken,
+    );
     if (imageBlocks.length > 0) {
       conversationBlocks.push(...imageBlocks);
     }
@@ -295,6 +298,78 @@ function buildTranscript(conversation: SimpleMessage[]): string {
     .map((msg) => msg.content)
     .join('\n')
     .trim();
+}
+
+function buildSegmentedConversationBlocks(
+  conversation: SimpleMessage[],
+  maxContextTokens: number,
+  approxCharsPerToken: number,
+): ClaudeContentBlock[] {
+  if (!conversation.length) {
+    return [];
+  }
+
+  const maxSegments = 3;
+  const targetTokensPerSegment = Math.max(
+    1,
+    Math.floor(maxContextTokens / maxSegments),
+  );
+
+  const segments: string[] = [];
+  let segmentBuffer: string[] = [];
+  let segmentTokens = 0;
+
+  conversation.forEach((message) => {
+    const line = message.content;
+    const estimatedTokens = estimateTokensApprox(line, approxCharsPerToken) + 4;
+    if (
+      segmentBuffer.length > 0 &&
+      segments.length < maxSegments - 1 &&
+      segmentTokens + estimatedTokens > targetTokensPerSegment
+    ) {
+      segments.push(segmentBuffer.join('\n'));
+      segmentBuffer = [];
+      segmentTokens = 0;
+    }
+    segmentBuffer.push(line);
+    segmentTokens += estimatedTokens;
+  });
+
+  if (segmentBuffer.length > 0) {
+    segments.push(segmentBuffer.join('\n'));
+  }
+
+  return segments.map((segmentText, index) => {
+    const isLast = index === segments.length - 1;
+    const normalizedText = isLast
+      ? segmentText.trim()
+      : ensureTrailingNewline(segmentText);
+
+    const block: ClaudeContentBlock = {
+      type: 'text',
+      text: normalizedText,
+    };
+
+    if (!isLast) {
+      block.cache_control = { type: 'ephemeral' as const };
+    }
+
+    return block;
+  });
+}
+
+function ensureTrailingNewline(text: string): string {
+  if (text.endsWith('\n')) {
+    return text;
+  }
+  return `${text}\n`;
+}
+
+function estimateTokensApprox(
+  text: string,
+  approxCharsPerToken: number,
+): number {
+  return Math.ceil(text.length / Math.max(approxCharsPerToken, 1));
 }
 
 function extractOpenAIDelta(chunk: ChatCompletionChunk): string {

@@ -161,6 +161,8 @@ const aiProvider = createAIProvider({
   prefillCommand: PREFILL_COMMAND,
   temperature: TEMPERATURE,
   maxTokens: MAX_TOKENS,
+  maxContextTokens: MAX_CONTEXT_TOKENS,
+  approxCharsPerToken: APPROX_CHARS_PER_TOKEN,
   anthropicModel: CLAUDE_MODEL,
   openaiModel: OPENAI_MODEL,
   openaiBaseURL: OPENAI_BASE_URL,
