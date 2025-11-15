@@ -169,6 +169,7 @@ class OpenAIProvider {
         let aggregatedText = '';
         let abortedByGuard = false;
         try {
+            let chunkNum = 0;
             for await (const chunk of stream) {
                 if (guard.truncated)
                     break;
@@ -176,12 +177,16 @@ class OpenAIProvider {
                 if (!deltaText)
                     continue;
                 aggregatedText += deltaText;
-                const checked = guard.inspect(aggregatedText);
-                if (checked !== aggregatedText) {
-                    aggregatedText = checked;
-                    abortedByGuard = true;
-                    stream.controller.abort();
-                    break;
+                chunkNum += 1;
+                // Give it a chance to not frag immediately
+                if (chunkNum > 2) {
+                    const checked = guard.inspect(aggregatedText);
+                    if (checked !== aggregatedText) {
+                        aggregatedText = checked;
+                        abortedByGuard = true;
+                        stream.controller.abort();
+                        break;
+                    }
                 }
             }
         }
