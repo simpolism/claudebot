@@ -587,7 +587,7 @@ client.on(Events.MessageCreate, async (message) => {
     console.error('Error handling message:', err);
     try {
       await message.reply(
-        "Sorry, I hit an error talking to Claude. Check the bot logs / Anthropic config.",
+        "Sorry, I hit an error. Check the bot logs.",
       );
     } catch {
       // ignore

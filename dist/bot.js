@@ -415,7 +415,7 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
     catch (err) {
         console.error('Error handling message:', err);
         try {
-            await message.reply("Sorry, I hit an error talking to Claude. Check the bot logs / Anthropic config.");
+            await message.reply("Sorry, I hit an error. Check the bot logs.");
         }
         catch {
             // ignore

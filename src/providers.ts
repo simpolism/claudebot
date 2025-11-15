@@ -4,6 +4,7 @@ import OpenAI from 'openai';
 import type {
   ChatCompletionChunk,
   ChatCompletionContentPart,
+  ChatCompletionContentPartText,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions/completions';
 import { ClaudeContentBlock, ImageBlock, SimpleMessage, AIResponse } from './types';
@@ -210,25 +211,9 @@ class OpenAIProvider implements AIProvider {
       });
     }
 
-    const conversationParts = buildOpenAIConversationParts(
-      transcriptText,
-      imageBlocks,
-    );
-    if (conversationParts.length > 0) {
-      messages.push({
-        role: 'user',
-        content: conversationParts,
-      });
-    }
-
     messages.push({
       role: 'assistant',
-      content: [
-        {
-          type: 'text',
-          text: `${botDisplayName}:`,
-        },
-      ],
+      content: transcriptText + `\n${botDisplayName}:`,
     });
 
     const stream = await this.client.chat.completions.create({
@@ -309,30 +294,6 @@ function buildTranscript(conversation: SimpleMessage[]): string {
     .map((msg) => msg.content)
     .join('\n')
     .trim();
-}
-
-function buildOpenAIConversationParts(
-  transcriptText: string,
-  imageBlocks: ImageBlock[],
-): ChatCompletionContentPart[] {
-  const parts: ChatCompletionContentPart[] = [];
-  if (transcriptText) {
-    parts.push({
-      type: 'text',
-      text: transcriptText,
-    });
-  }
-
-  imageBlocks.forEach((block) => {
-    parts.push({
-      type: 'image_url',
-      image_url: {
-        url: block.source.url,
-      },
-    } as ChatCompletionContentPart);
-  });
-
-  return parts;
 }
 
 function extractOpenAIDelta(chunk: ChatCompletionChunk): string {
