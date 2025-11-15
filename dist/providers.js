@@ -38,7 +38,10 @@ class AnthropicProvider {
                 {
                     type: 'text',
                     text: trimmedSystemPrompt,
-                    cache_control: { type: 'ephemeral' },
+                    cache_control: {
+                        type: 'ephemeral',
+                        ttl: '1h',
+                    },
                 },
             ]
             : undefined;
@@ -267,7 +270,10 @@ function buildSegmentedConversationBlocks(conversation, maxContextTokens, approx
             text: isLast ? joined : `${joined}\n`,
         };
         if (!isLast) {
-            block.cache_control = { type: 'ephemeral' };
+            block.cache_control = {
+                type: 'ephemeral',
+                ttl: '1h',
+            };
         }
         return block;
     });

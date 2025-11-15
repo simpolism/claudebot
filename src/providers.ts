@@ -76,7 +76,10 @@ class AnthropicProvider implements AIProvider {
           {
             type: 'text' as const,
             text: trimmedSystemPrompt,
-            cache_control: { type: 'ephemeral' as const },
+            cache_control: {
+              type: 'ephemeral' as const,
+              ttl: '1h' as const,
+            },
           },
         ]
       : undefined;
@@ -365,7 +368,10 @@ function buildSegmentedConversationBlocks(
       text: isLast ? joined : `${joined}\n`,
     };
     if (!isLast) {
-      block.cache_control = { type: 'ephemeral' as const };
+      block.cache_control = {
+        type: 'ephemeral' as const,
+        ttl: '1h' as const,
+      };
     }
     return block;
   });

@@ -16,6 +16,7 @@ export type TextBlock = {
   text: string;
   cache_control?: {
     type: 'ephemeral';
+    ttl?: '5m' | '1h';
   };
 };
 
