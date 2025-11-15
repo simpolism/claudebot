@@ -18,14 +18,6 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const MAIN_CHANNEL_ID = process.env.MAIN_CHANNEL_ID; // text channel id
 const CLAUDE_MODEL =
   process.env.CLAUDE_MODEL || 'claude-haiku-4-5';
-const MESSAGE_CACHE_LIMIT = parseInt(
-  process.env.MESSAGE_CACHE_LIMIT || '500',
-  10,
-);
-const BOOTSTRAP_MESSAGE_LIMIT = parseInt(
-  process.env.BOOTSTRAP_MESSAGE_LIMIT || `${MESSAGE_CACHE_LIMIT}`,
-  10,
-);
 const MAX_CONTEXT_TOKENS = parseInt(
   process.env.MAX_CONTEXT_TOKENS || '180000',
   10,
@@ -54,8 +46,6 @@ const STARTUP_CONFIG = {
   claudeModel: CLAUDE_MODEL,
   openaiModel: OPENAI_MODEL,
   openaiBaseURL: OPENAI_BASE_URL,
-  messageCacheLimit: MESSAGE_CACHE_LIMIT,
-  bootstrapMessageLimit: BOOTSTRAP_MESSAGE_LIMIT,
   maxContextTokens: MAX_CONTEXT_TOKENS,
   maxTokens: MAX_TOKENS,
   temperature: TEMPERATURE,
@@ -122,11 +112,13 @@ function prependCachedMessages(
   trimHistoryToLimit(history);
 }
 
+const MAX_CACHED_MESSAGES = 1500;
+
 function trimHistoryToLimit(history: CachedMessage[]): void {
-  if (history.length <= MESSAGE_CACHE_LIMIT) {
+  if (history.length <= MAX_CACHED_MESSAGES) {
     return;
   }
-  const excess = history.length - MESSAGE_CACHE_LIMIT;
+  const excess = history.length - MAX_CACHED_MESSAGES;
   history.splice(0, excess);
 }
 
@@ -408,8 +400,9 @@ async function bootstrapChannelHistory(channelId: string): Promise<void> {
 
     const collectedMessages: Message[] = [];
     let lastId: string | undefined;
-    while (collectedMessages.length < BOOTSTRAP_MESSAGE_LIMIT) {
-      const remaining = BOOTSTRAP_MESSAGE_LIMIT - collectedMessages.length;
+    const bootstrapTarget = MAX_CACHED_MESSAGES;
+    while (collectedMessages.length < bootstrapTarget) {
+      const remaining = bootstrapTarget - collectedMessages.length;
       const fetchLimit = Math.min(remaining, 100);
       const fetched = await channel.messages.fetch({
         limit: fetchLimit,
@@ -427,7 +420,7 @@ async function bootstrapChannelHistory(channelId: string): Promise<void> {
 
     const sortedMessages = collectedMessages
       .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-      .slice(-BOOTSTRAP_MESSAGE_LIMIT);
+      .slice(-MAX_CACHED_MESSAGES);
 
     if (sortedMessages.length === 0) {
       console.log(`No historical messages to bootstrap for ${channelId}.`);
