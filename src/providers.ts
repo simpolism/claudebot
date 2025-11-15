@@ -310,29 +310,42 @@ function buildSegmentedConversationBlocks(
   }
 
   const maxSegments = 3;
+  const tokenized = conversation.map((message) => {
+    const text = message.content;
+    const estimatedTokens =
+      estimateTokensApprox(text, approxCharsPerToken) + 4;
+    return { text, tokens: estimatedTokens };
+  });
+
+  const totalTokens = tokenized.reduce(
+    (sum, entry) => sum + entry.tokens,
+    0,
+  );
+
+  if (totalTokens === 0) {
+    return [];
+  }
+
   const targetTokensPerSegment = Math.max(
     1,
-    Math.floor(maxContextTokens / maxSegments),
+    Math.floor(totalTokens / maxSegments),
   );
 
   const segments: string[] = [];
   let segmentBuffer: string[] = [];
   let segmentTokens = 0;
 
-  conversation.forEach((message) => {
-    const line = message.content;
-    const estimatedTokens = estimateTokensApprox(line, approxCharsPerToken) + 4;
+  tokenized.forEach((entry) => {
+    segmentBuffer.push(entry.text);
+    segmentTokens += entry.tokens;
     if (
-      segmentBuffer.length > 0 &&
       segments.length < maxSegments - 1 &&
-      segmentTokens + estimatedTokens > targetTokensPerSegment
+      segmentTokens >= targetTokensPerSegment
     ) {
       segments.push(segmentBuffer.join('\n'));
       segmentBuffer = [];
       segmentTokens = 0;
     }
-    segmentBuffer.push(line);
-    segmentTokens += estimatedTokens;
   });
 
   if (segmentBuffer.length > 0) {
@@ -341,13 +354,9 @@ function buildSegmentedConversationBlocks(
 
   return segments.map((segmentText, index) => {
     const isLast = index === segments.length - 1;
-    const normalizedText = isLast
-      ? segmentText.trim()
-      : ensureTrailingNewline(segmentText);
-
     const block: ClaudeContentBlock = {
       type: 'text',
-      text: normalizedText,
+      text: formatSegmentText(segmentText, isLast),
     };
 
     if (!isLast) {
@@ -358,11 +367,15 @@ function buildSegmentedConversationBlocks(
   });
 }
 
-function ensureTrailingNewline(text: string): string {
-  if (text.endsWith('\n')) {
-    return text;
+function formatSegmentText(segmentText: string, isLast: boolean): string {
+  const trimmed = segmentText.trim();
+  if (!trimmed) {
+    return '(empty message)';
   }
-  return `${text}\n`;
+  if (isLast) {
+    return trimmed;
+  }
+  return `${trimmed}\n`;
 }
 
 function estimateTokensApprox(
