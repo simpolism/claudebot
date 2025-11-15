@@ -63,20 +63,16 @@ const insertMessageStmt = db.prepare(`
   VALUES (?, ?, ?, ?, ?)
 `);
 const getRecentMessagesStmt = db.prepare(`
-  SELECT role, content
+  SELECT id, role, content, created_at
   FROM messages
   WHERE channel_id = ?
   ORDER BY created_at DESC
   LIMIT ?
 `);
-const pruneOldMessagesStmt = db.prepare(`
+const deleteMessagesThroughStmt = db.prepare(`
   DELETE FROM messages
-  WHERE id IN (
-    SELECT id FROM messages
-    WHERE channel_id = ?
-    ORDER BY created_at DESC
-    LIMIT -1 OFFSET ?
-  )
+  WHERE channel_id = ?
+    AND id <= ?
 `);
 const countMessagesStmt = db.prepare(`
   SELECT COUNT(*) as count FROM messages
@@ -96,8 +92,6 @@ function parseBooleanFlag(value) {
 }
 function saveMessage(channelId, role, authorId, content, createdAt) {
     insertMessageStmt.run(channelId, role, authorId, content, createdAt ?? Date.now());
-    // keep only last N per channel/thread
-    pruneOldMessagesStmt.run(channelId, MESSAGE_CACHE_LIMIT);
 }
 // ---------- Discord client ----------
 const client = new discord_js_1.Client({
@@ -148,34 +142,81 @@ function shouldRespond(message) {
         return false;
     return message.mentions.has(client.user);
 }
-// Build conversation from cached messages for this channel/thread
 function buildConversation(channelId) {
     const rows = getRecentMessagesStmt.all(channelId, MESSAGE_CACHE_LIMIT);
-    // DB returns newest first; reverse to oldest-first
+    if (!rows.length) {
+        return [];
+    }
     rows.reverse();
-    const messages = rows.map((row) => ({
+    const tokenizedRows = rows.map((row) => ({
+        id: row.id,
         role: row.role,
         content: row.content,
+        tokens: estimateTokens(row.content) + 4,
     }));
-    return trimConversation(messages);
+    const { messages, prunedMaxId } = segmentConversationRows(tokenizedRows);
+    if (typeof prunedMaxId === 'number') {
+        try {
+            deleteMessagesThroughStmt.run(channelId, prunedMaxId);
+        }
+        catch (err) {
+            console.warn(`Failed to prune channel ${channelId} history`, err);
+        }
+    }
+    return messages;
 }
 function estimateTokens(text) {
     return Math.ceil(text.length / Math.max(APPROX_CHARS_PER_TOKEN, 1));
 }
-function trimConversation(messages) {
+function segmentConversationRows(rows) {
+    const maxSegments = 3;
+    const targetTokensPerSegment = Math.max(1, Math.floor(MAX_CONTEXT_TOKENS / maxSegments));
+    const segments = [];
     let totalTokens = 0;
-    const trimmed = [];
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const message = messages[i];
-        const messageTokens = estimateTokens(message.content) + 4;
-        if (trimmed.length > 0 &&
-            totalTokens + messageTokens > MAX_CONTEXT_TOKENS) {
-            break;
+    let prunedMaxId;
+    const recordPrunedSegment = (segment) => {
+        if (!segment || segment.rows.length === 0)
+            return;
+        totalTokens -= segment.tokens;
+        const lastRow = segment.rows[segment.rows.length - 1];
+        if (lastRow) {
+            prunedMaxId = prunedMaxId
+                ? Math.max(prunedMaxId, lastRow.id)
+                : lastRow.id;
         }
-        totalTokens += messageTokens;
-        trimmed.push(message);
+    };
+    const startNewSegment = () => {
+        segments.push({ rows: [], tokens: 0 });
+    };
+    for (const row of rows) {
+        while (segments.length === maxSegments &&
+            totalTokens + row.tokens > MAX_CONTEXT_TOKENS &&
+            segments[0]?.rows.length) {
+            recordPrunedSegment(segments.shift());
+        }
+        if (segments.length === 0 ||
+            (segments.length < maxSegments &&
+                segments[segments.length - 1].tokens >= targetTokensPerSegment)) {
+            startNewSegment();
+        }
+        else if (segments.length === maxSegments &&
+            segments[segments.length - 1].tokens >= targetTokensPerSegment) {
+            recordPrunedSegment(segments.shift());
+            startNewSegment();
+        }
+        if (segments.length === 0) {
+            startNewSegment();
+        }
+        const current = segments[segments.length - 1];
+        current.rows.push(row);
+        current.tokens += row.tokens;
+        totalTokens += row.tokens;
     }
-    return trimmed.reverse();
+    const messages = segments.flatMap((segment) => segment.rows.map((row) => ({
+        role: row.role,
+        content: row.content,
+    })));
+    return { messages, prunedMaxId };
 }
 function chunkReplyText(text) {
     if (text.length <= DISCORD_MESSAGE_LIMIT) {
