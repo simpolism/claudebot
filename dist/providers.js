@@ -179,15 +179,17 @@ class OpenAIProvider {
                 aggregatedText += deltaText;
                 chunkNum += 1;
                 // Give it a chance to not frag immediately
+                /*
                 if (chunkNum > 2) {
-                    const checked = guard.inspect(aggregatedText);
-                    if (checked !== aggregatedText) {
-                        aggregatedText = checked;
-                        abortedByGuard = true;
-                        stream.controller.abort();
-                        break;
-                    }
+                  const checked = guard.inspect(aggregatedText);
+                  if (checked !== aggregatedText) {
+                    aggregatedText = checked;
+                    abortedByGuard = true;
+                    stream.controller.abort();
+                    break;
+                  }
                 }
+                */
             }
         }
         catch (err) {

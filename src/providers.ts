@@ -237,6 +237,7 @@ class OpenAIProvider implements AIProvider {
         chunkNum += 1;
 
         // Give it a chance to not frag immediately
+        /*
         if (chunkNum > 2) {
           const checked = guard.inspect(aggregatedText);
           if (checked !== aggregatedText) {
@@ -246,6 +247,7 @@ class OpenAIProvider implements AIProvider {
             break;
           }
         }
+        */
       }
     } catch (err) {
       if (!(abortedByGuard && isAbortError(err))) {
