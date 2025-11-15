@@ -26,6 +26,22 @@ const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'moonshotai/kimi-k2-instruct-0905';
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const STARTUP_CONFIG = {
+    mainChannelId: MAIN_CHANNEL_ID || '(unset)',
+    aiProvider: AI_PROVIDER,
+    claudeModel: CLAUDE_MODEL,
+    openaiModel: OPENAI_MODEL,
+    openaiBaseURL: OPENAI_BASE_URL,
+    messageCacheLimit: MESSAGE_CACHE_LIMIT,
+    bootstrapMessageLimit: BOOTSTRAP_MESSAGE_LIMIT,
+    maxContextTokens: MAX_CONTEXT_TOKENS,
+    maxTokens: MAX_TOKENS,
+    temperature: TEMPERATURE,
+    cliSimulationMode: CLI_SIM_MODE,
+    systemPromptEnabled: Boolean(SYSTEM_PROMPT),
+    prefillCommand: PREFILL_COMMAND ?? '(none)',
+};
+console.log('Starting Claude bot with configuration:', STARTUP_CONFIG);
 // ---------- SQLite setup (file-based cache) ----------
 const db = new better_sqlite3_1.default('claude-cache.sqlite');
 db.pragma('journal_mode = WAL');
