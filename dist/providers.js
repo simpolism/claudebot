@@ -228,53 +228,49 @@ function buildSegmentedConversationBlocks(conversation, maxContextTokens, approx
         return [];
     }
     const maxSegments = 3;
-    const tokenized = conversation.map((message) => {
-        const text = message.content;
-        const estimatedTokens = estimateTokensApprox(text, approxCharsPerToken) + 4;
-        return { text, tokens: estimatedTokens };
-    });
-    const totalTokens = tokenized.reduce((sum, entry) => sum + entry.tokens, 0);
-    if (totalTokens === 0) {
-        return [];
-    }
-    const targetTokensPerSegment = Math.max(1, Math.floor(totalTokens / maxSegments));
+    const targetTokensPerSegment = Math.max(1, Math.floor(maxContextTokens / maxSegments));
     const segments = [];
-    let segmentBuffer = [];
-    let segmentTokens = 0;
-    tokenized.forEach((entry) => {
-        segmentBuffer.push(entry.text);
-        segmentTokens += entry.tokens;
-        if (segments.length < maxSegments - 1 &&
-            segmentTokens >= targetTokensPerSegment) {
-            segments.push(segmentBuffer.join('\n'));
-            segmentBuffer = [];
-            segmentTokens = 0;
+    let totalTokens = 0;
+    conversation.forEach((message) => {
+        const text = message.content;
+        const messageTokens = estimateTokensApprox(text, approxCharsPerToken) + 4;
+        while (segments.length === maxSegments &&
+            totalTokens + messageTokens > maxContextTokens &&
+            segments[0].messages.length > 0) {
+            totalTokens -= segments[0].tokens;
+            segments.shift();
         }
+        if (segments.length === 0 ||
+            (segments.length < maxSegments &&
+                segments[segments.length - 1].tokens >= targetTokensPerSegment)) {
+            segments.push({ messages: [], tokens: 0 });
+        }
+        else if (segments.length === maxSegments &&
+            segments[segments.length - 1].tokens >= targetTokensPerSegment) {
+            segments.push({ messages: [], tokens: 0 });
+            totalTokens -= segments[0].tokens;
+            segments.shift();
+        }
+        if (segments.length === 0) {
+            segments.push({ messages: [], tokens: 0 });
+        }
+        const current = segments[segments.length - 1];
+        current.messages.push(text);
+        current.tokens += messageTokens;
+        totalTokens += messageTokens;
     });
-    if (segmentBuffer.length > 0) {
-        segments.push(segmentBuffer.join('\n'));
-    }
-    return segments.map((segmentText, index) => {
+    return segments.map((segment, index) => {
         const isLast = index === segments.length - 1;
+        const joined = segment.messages.join('\n').trim() || '(empty message)';
         const block = {
             type: 'text',
-            text: formatSegmentText(segmentText, isLast),
+            text: isLast ? joined : `${joined}\n`,
         };
         if (!isLast) {
             block.cache_control = { type: 'ephemeral' };
         }
         return block;
     });
-}
-function formatSegmentText(segmentText, isLast) {
-    const trimmed = segmentText.trim();
-    if (!trimmed) {
-        return '(empty message)';
-    }
-    if (isLast) {
-        return trimmed;
-    }
-    return `${trimmed}\n`;
 }
 function estimateTokensApprox(text, approxCharsPerToken) {
     return Math.ceil(text.length / Math.max(approxCharsPerToken, 1));
