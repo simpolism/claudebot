@@ -38,10 +38,10 @@ const STARTUP_CONFIG = {
     maxTokens: MAX_TOKENS,
     temperature: TEMPERATURE,
     cliSimulationMode: CLI_SIM_MODE,
-    systemPromptEnabled: Boolean(SYSTEM_PROMPT),
-    prefillCommand: PREFILL_COMMAND ?? '(none)',
+    systemPrompt: `"${SYSTEM_PROMPT}"`,
+    prefillCommand: `"${PREFILL_COMMAND}"`,
 };
-console.log('Starting Claude bot with configuration:', STARTUP_CONFIG);
+console.log('Starting bot with configuration:', STARTUP_CONFIG);
 // ---------- SQLite setup (file-based cache) ----------
 const db = new better_sqlite3_1.default('claude-cache.sqlite');
 db.pragma('journal_mode = WAL');
