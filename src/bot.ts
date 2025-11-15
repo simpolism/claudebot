@@ -10,7 +10,6 @@ import {
   PrivateThreadChannel,
   PublicThreadChannel,
 } from 'discord.js';
-import Database from 'better-sqlite3';
 import { createAIProvider } from './providers';
 import { ImageBlock, SimpleMessage } from './types';
 
@@ -67,52 +66,69 @@ const STARTUP_CONFIG = {
 
 console.log('Starting bot with configuration:', STARTUP_CONFIG);
 
-// ---------- SQLite setup (file-based cache) ----------
-const db = new Database('claude-cache.sqlite');
-db.pragma('journal_mode = WAL');
+// ---------- In-memory conversation cache ----------
+type CachedMessage = SimpleMessage & {
+  messageId?: string;
+  authorId: string;
+  createdAt: number;
+};
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel_id TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-  author_id TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
+const channelHistories = new Map<string, CachedMessage[]>();
+const bootstrappedChannels = new Set<string>();
+const channelBootstrapPromises = new Map<string, Promise<void>>();
 
-CREATE INDEX IF NOT EXISTS idx_messages_channel_created_at
-  ON messages(channel_id, created_at);
-`);
+function ensureChannelHistory(channelId: string): CachedMessage[] {
+  let history = channelHistories.get(channelId);
+  if (!history) {
+    history = [];
+    channelHistories.set(channelId, history);
+  }
+  return history;
+}
 
-const insertMessageStmt = db.prepare<
-  [channelId: string, role: string, authorId: string, content: string, createdAt: number]
->(`
-  INSERT INTO messages (channel_id, role, author_id, content, created_at)
-  VALUES (?, ?, ?, ?, ?)
-`);
+function hasCachedMessage(channelId: string, messageId?: string): boolean {
+  if (!messageId) return false;
+  const history = channelHistories.get(channelId);
+  if (!history) return false;
+  return history.some((entry) => entry.messageId === messageId);
+}
 
-const getRecentMessagesStmt = db.prepare<[channelId: string, limit: number]>(`
-  SELECT role, content
-  FROM messages
-  WHERE channel_id = ?
-  ORDER BY created_at DESC
-  LIMIT ?
-`);
+function appendCachedMessage(channelId: string, entry: CachedMessage): void {
+  if (entry.messageId && hasCachedMessage(channelId, entry.messageId)) {
+    return;
+  }
+  const history = ensureChannelHistory(channelId);
+  history.push(entry);
+  trimHistoryToLimit(history);
+}
 
-const pruneOldMessagesStmt = db.prepare<[channelId: string, offset: number]>(`
-  DELETE FROM messages
-  WHERE id IN (
-    SELECT id FROM messages
-    WHERE channel_id = ?
-    ORDER BY created_at DESC
-    LIMIT -1 OFFSET ?
-  )
-`);
+function prependCachedMessages(
+  channelId: string,
+  entries: CachedMessage[],
+): void {
+  if (entries.length === 0) return;
+  const history = ensureChannelHistory(channelId);
+  const historyIds = new Set(
+    history.map((entry) => entry.messageId).filter(Boolean) as string[],
+  );
+  const deduped = entries.filter((entry) => {
+    if (!entry.messageId) return true;
+    return !historyIds.has(entry.messageId);
+  });
+  if (deduped.length === 0) {
+    return;
+  }
+  history.unshift(...deduped);
+  trimHistoryToLimit(history);
+}
 
-const countMessagesStmt = db.prepare<[], { count: number }>(`
-  SELECT COUNT(*) as count FROM messages
-`);
+function trimHistoryToLimit(history: CachedMessage[]): void {
+  if (history.length <= MESSAGE_CACHE_LIMIT) {
+    return;
+  }
+  const excess = history.length - MESSAGE_CACHE_LIMIT;
+  history.splice(0, excess);
+}
 
 function parseBooleanFlag(value: string | undefined): boolean {
   if (!value) return false;
@@ -125,24 +141,6 @@ function parseBooleanFlag(value: string | undefined): boolean {
     default:
       return false;
   }
-}
-
-function saveMessage(
-  channelId: string,
-  role: 'user' | 'assistant',
-  authorId: string,
-  content: string,
-  createdAt?: number,
-) {
-  insertMessageStmt.run(
-    channelId,
-    role,
-    authorId,
-    content,
-    createdAt ?? Date.now(),
-  );
-  // keep only last N per channel/thread
-  pruneOldMessagesStmt.run(channelId, MESSAGE_CACHE_LIMIT);
 }
 
 // ---------- Discord client ----------
@@ -161,6 +159,8 @@ const aiProvider = createAIProvider({
   prefillCommand: PREFILL_COMMAND,
   temperature: TEMPERATURE,
   maxTokens: MAX_TOKENS,
+  maxContextTokens: MAX_CONTEXT_TOKENS,
+  approxCharsPerToken: APPROX_CHARS_PER_TOKEN,
   anthropicModel: CLAUDE_MODEL,
   openaiModel: OPENAI_MODEL,
   openaiBaseURL: OPENAI_BASE_URL,
@@ -206,19 +206,14 @@ function shouldRespond(message: Message): boolean {
 
 // Build conversation from cached messages for this channel/thread
 function buildConversation(channelId: string): SimpleMessage[] {
-  const rows = getRecentMessagesStmt.all(channelId, MESSAGE_CACHE_LIMIT) as {
-    role: 'user' | 'assistant';
-    content: string;
-  }[];
-
-  // DB returns newest first; reverse to oldest-first
-  rows.reverse();
-
-  const messages = rows.map((row) => ({
-    role: row.role,
-    content: row.content,
+  const history = channelHistories.get(channelId);
+  if (!history || history.length === 0) {
+    return [];
+  }
+  const messages = history.map((entry) => ({
+    role: entry.role,
+    content: entry.content,
   }));
-
   return trimConversation(messages);
 }
 
@@ -375,23 +370,38 @@ function replaceUserMentions(content: string, message: Message): string {
   });
 }
 
-async function bootstrapHistory(): Promise<void> {
-  const result = countMessagesStmt.get();
-  const count = result?.count ?? 0;
-  if (count > 0) {
+async function ensureChannelBootstrapped(
+  channelId: string | null | undefined,
+): Promise<void> {
+  if (!channelId) return;
+  if (bootstrappedChannels.has(channelId)) {
     return;
   }
 
-  if (!MAIN_CHANNEL_ID) {
-    console.warn('Cannot bootstrap history: MAIN_CHANNEL_ID is unset.');
+  const existing = channelBootstrapPromises.get(channelId);
+  if (existing) {
+    await existing;
     return;
   }
 
+  const bootstrapPromise = bootstrapChannelHistory(channelId)
+    .then(() => {
+      bootstrappedChannels.add(channelId);
+    })
+    .finally(() => {
+      channelBootstrapPromises.delete(channelId);
+    });
+
+  channelBootstrapPromises.set(channelId, bootstrapPromise);
+  await bootstrapPromise;
+}
+
+async function bootstrapChannelHistory(channelId: string): Promise<void> {
   try {
-    const channel = await client.channels.fetch(MAIN_CHANNEL_ID);
+    const channel = await client.channels.fetch(channelId);
     if (!channel || !channel.isTextBased()) {
       console.warn(
-        `Unable to bootstrap history: channel ${MAIN_CHANNEL_ID} is not text-based or could not be fetched.`,
+        `Unable to bootstrap history: channel ${channelId} is not text-based or could not be fetched.`,
       );
       return;
     }
@@ -419,13 +429,12 @@ async function bootstrapHistory(): Promise<void> {
       .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
       .slice(-BOOTSTRAP_MESSAGE_LIMIT);
 
-    console.log(
-      `Bootstrapping ${sortedMessages.length} historical message${
-        sortedMessages.length === 1 ? '' : 's'
-      } from channel ${MAIN_CHANNEL_ID}`,
-    );
+    if (sortedMessages.length === 0) {
+      console.log(`No historical messages to bootstrap for ${channelId}.`);
+      return;
+    }
 
-    for (const msg of sortedMessages) {
+    const cachedEntries: CachedMessage[] = sortedMessages.map((msg) => {
       const isAssistant =
         Boolean(client.user) && msg.author.id === client.user?.id;
       const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
@@ -441,16 +450,24 @@ async function bootstrapHistory(): Promise<void> {
         ? getBotCanonicalName()
         : getUserCanonicalName(msg);
 
-      saveMessage(
-        msg.channel.id,
+      return {
         role,
-        msg.author.id,
-        formatAuthoredContent(authorName, storedContent),
-        msg.createdTimestamp,
-      );
-    }
+        authorId: msg.author.id,
+        content: formatAuthoredContent(authorName, storedContent),
+        messageId: msg.id,
+        createdAt: msg.createdTimestamp ?? Date.now(),
+      };
+    });
+
+    prependCachedMessages(channelId, cachedEntries);
+    console.log(
+      `Bootstrapped ${cachedEntries.length} historical message${
+        cachedEntries.length === 1 ? '' : 's'
+      } for channel ${channelId}`,
+    );
   } catch (err) {
-    console.error('Failed to bootstrap message history:', err);
+    console.error(`Failed to bootstrap message history for ${channelId}:`, err);
+    throw err;
   }
 }
 
@@ -512,10 +529,12 @@ function hasSend(channel: Message['channel']): channel is SendCapableChannel {
 // ---------- Events ----------
 client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
-  try {
-    await bootstrapHistory();
-  } catch (err) {
-    console.error('Bootstrap history failed:', err);
+  if (MAIN_CHANNEL_ID) {
+    try {
+      await ensureChannelBootstrapped(MAIN_CHANNEL_ID);
+    } catch (err) {
+      console.error('Main channel bootstrap failed:', err);
+    }
   }
 });
 
@@ -536,16 +555,25 @@ client.on(Events.MessageCreate, async (message) => {
     );
 
     if (canCacheUserMessage) {
-      saveMessage(
-        channelId,
-        'user',
-        message.author.id,
-        storedUserContent,
-        message.createdTimestamp,
-      );
+      appendCachedMessage(channelId, {
+        role: 'user',
+        authorId: message.author.id,
+        content: storedUserContent,
+        messageId: message.id,
+        createdAt: message.createdTimestamp ?? Date.now(),
+      });
     }
 
     if (!shouldRespond(message)) return;
+
+    try {
+      await ensureChannelBootstrapped(channelId);
+    } catch (err) {
+      console.warn(
+        `Failed to bootstrap history for channel ${channelId}, continuing with limited context.`,
+        err,
+      );
+    }
 
     const botDisplayName = getBotCanonicalName();
     // Save user message for this channel/thread context
@@ -572,13 +600,13 @@ client.on(Events.MessageCreate, async (message) => {
     if (replyChunks.length > 0) {
       const [firstChunk, ...restChunks] = replyChunks;
       lastSent = await message.reply(firstChunk);
-      saveMessage(
-        channelId,
-        'assistant',
-        lastSent.author.id,
-        formatAuthoredContent(botDisplayName, firstChunk),
-        lastSent.createdTimestamp,
-      );
+      appendCachedMessage(channelId, {
+        role: 'assistant',
+        authorId: lastSent.author.id,
+        content: formatAuthoredContent(botDisplayName, firstChunk),
+        messageId: lastSent.id,
+        createdAt: lastSent.createdTimestamp ?? Date.now(),
+      });
 
       for (const chunk of restChunks) {
         if (hasSend(message.channel)) {
@@ -586,13 +614,13 @@ client.on(Events.MessageCreate, async (message) => {
         } else {
           lastSent = await message.reply(chunk);
         }
-        saveMessage(
-          channelId,
-          'assistant',
-          lastSent.author.id,
-          formatAuthoredContent(botDisplayName, chunk),
-          lastSent.createdTimestamp,
-        );
+        appendCachedMessage(channelId, {
+          role: 'assistant',
+          authorId: lastSent.author.id,
+          content: formatAuthoredContent(botDisplayName, chunk),
+          messageId: lastSent.id,
+          createdAt: lastSent.createdTimestamp ?? Date.now(),
+        });
       }
     }
 

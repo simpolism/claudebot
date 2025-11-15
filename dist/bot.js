@@ -1,11 +1,7 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const discord_js_1 = require("discord.js");
-const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
 const providers_1 = require("./providers");
 // ---------- Config ----------
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -42,45 +38,56 @@ const STARTUP_CONFIG = {
     prefillCommand: `"${PREFILL_COMMAND}"`,
 };
 console.log('Starting bot with configuration:', STARTUP_CONFIG);
-// ---------- SQLite setup (file-based cache) ----------
-const db = new better_sqlite3_1.default('claude-cache.sqlite');
-db.pragma('journal_mode = WAL');
-db.exec(`
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel_id TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-  author_id TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_messages_channel_created_at
-  ON messages(channel_id, created_at);
-`);
-const insertMessageStmt = db.prepare(`
-  INSERT INTO messages (channel_id, role, author_id, content, created_at)
-  VALUES (?, ?, ?, ?, ?)
-`);
-const getRecentMessagesStmt = db.prepare(`
-  SELECT role, content
-  FROM messages
-  WHERE channel_id = ?
-  ORDER BY created_at DESC
-  LIMIT ?
-`);
-const pruneOldMessagesStmt = db.prepare(`
-  DELETE FROM messages
-  WHERE id IN (
-    SELECT id FROM messages
-    WHERE channel_id = ?
-    ORDER BY created_at DESC
-    LIMIT -1 OFFSET ?
-  )
-`);
-const countMessagesStmt = db.prepare(`
-  SELECT COUNT(*) as count FROM messages
-`);
+const channelHistories = new Map();
+const bootstrappedChannels = new Set();
+const channelBootstrapPromises = new Map();
+function ensureChannelHistory(channelId) {
+    let history = channelHistories.get(channelId);
+    if (!history) {
+        history = [];
+        channelHistories.set(channelId, history);
+    }
+    return history;
+}
+function hasCachedMessage(channelId, messageId) {
+    if (!messageId)
+        return false;
+    const history = channelHistories.get(channelId);
+    if (!history)
+        return false;
+    return history.some((entry) => entry.messageId === messageId);
+}
+function appendCachedMessage(channelId, entry) {
+    if (entry.messageId && hasCachedMessage(channelId, entry.messageId)) {
+        return;
+    }
+    const history = ensureChannelHistory(channelId);
+    history.push(entry);
+    trimHistoryToLimit(history);
+}
+function prependCachedMessages(channelId, entries) {
+    if (entries.length === 0)
+        return;
+    const history = ensureChannelHistory(channelId);
+    const historyIds = new Set(history.map((entry) => entry.messageId).filter(Boolean));
+    const deduped = entries.filter((entry) => {
+        if (!entry.messageId)
+            return true;
+        return !historyIds.has(entry.messageId);
+    });
+    if (deduped.length === 0) {
+        return;
+    }
+    history.unshift(...deduped);
+    trimHistoryToLimit(history);
+}
+function trimHistoryToLimit(history) {
+    if (history.length <= MESSAGE_CACHE_LIMIT) {
+        return;
+    }
+    const excess = history.length - MESSAGE_CACHE_LIMIT;
+    history.splice(0, excess);
+}
 function parseBooleanFlag(value) {
     if (!value)
         return false;
@@ -93,11 +100,6 @@ function parseBooleanFlag(value) {
         default:
             return false;
     }
-}
-function saveMessage(channelId, role, authorId, content, createdAt) {
-    insertMessageStmt.run(channelId, role, authorId, content, createdAt ?? Date.now());
-    // keep only last N per channel/thread
-    pruneOldMessagesStmt.run(channelId, MESSAGE_CACHE_LIMIT);
 }
 // ---------- Discord client ----------
 const client = new discord_js_1.Client({
@@ -114,6 +116,8 @@ const aiProvider = (0, providers_1.createAIProvider)({
     prefillCommand: PREFILL_COMMAND,
     temperature: TEMPERATURE,
     maxTokens: MAX_TOKENS,
+    maxContextTokens: MAX_CONTEXT_TOKENS,
+    approxCharsPerToken: APPROX_CHARS_PER_TOKEN,
     anthropicModel: CLAUDE_MODEL,
     openaiModel: OPENAI_MODEL,
     openaiBaseURL: OPENAI_BASE_URL,
@@ -148,12 +152,13 @@ function shouldRespond(message) {
 }
 // Build conversation from cached messages for this channel/thread
 function buildConversation(channelId) {
-    const rows = getRecentMessagesStmt.all(channelId, MESSAGE_CACHE_LIMIT);
-    // DB returns newest first; reverse to oldest-first
-    rows.reverse();
-    const messages = rows.map((row) => ({
-        role: row.role,
-        content: row.content,
+    const history = channelHistories.get(channelId);
+    if (!history || history.length === 0) {
+        return [];
+    }
+    const messages = history.map((entry) => ({
+        role: entry.role,
+        content: entry.content,
     }));
     return trimConversation(messages);
 }
@@ -270,20 +275,32 @@ function replaceUserMentions(content, message) {
         return `@${formatMentionName(mentionedUser)}`;
     });
 }
-async function bootstrapHistory() {
-    const result = countMessagesStmt.get();
-    const count = result?.count ?? 0;
-    if (count > 0) {
+async function ensureChannelBootstrapped(channelId) {
+    if (!channelId)
+        return;
+    if (bootstrappedChannels.has(channelId)) {
         return;
     }
-    if (!MAIN_CHANNEL_ID) {
-        console.warn('Cannot bootstrap history: MAIN_CHANNEL_ID is unset.');
+    const existing = channelBootstrapPromises.get(channelId);
+    if (existing) {
+        await existing;
         return;
     }
+    const bootstrapPromise = bootstrapChannelHistory(channelId)
+        .then(() => {
+        bootstrappedChannels.add(channelId);
+    })
+        .finally(() => {
+        channelBootstrapPromises.delete(channelId);
+    });
+    channelBootstrapPromises.set(channelId, bootstrapPromise);
+    await bootstrapPromise;
+}
+async function bootstrapChannelHistory(channelId) {
     try {
-        const channel = await client.channels.fetch(MAIN_CHANNEL_ID);
+        const channel = await client.channels.fetch(channelId);
         if (!channel || !channel.isTextBased()) {
-            console.warn(`Unable to bootstrap history: channel ${MAIN_CHANNEL_ID} is not text-based or could not be fetched.`);
+            console.warn(`Unable to bootstrap history: channel ${channelId} is not text-based or could not be fetched.`);
             return;
         }
         const collectedMessages = [];
@@ -305,8 +322,11 @@ async function bootstrapHistory() {
         const sortedMessages = collectedMessages
             .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
             .slice(-BOOTSTRAP_MESSAGE_LIMIT);
-        console.log(`Bootstrapping ${sortedMessages.length} historical message${sortedMessages.length === 1 ? '' : 's'} from channel ${MAIN_CHANNEL_ID}`);
-        for (const msg of sortedMessages) {
+        if (sortedMessages.length === 0) {
+            console.log(`No historical messages to bootstrap for ${channelId}.`);
+            return;
+        }
+        const cachedEntries = sortedMessages.map((msg) => {
             const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
             const role = isAssistant ? 'assistant' : 'user';
             const attachmentSummary = buildAttachmentSummary(msg.attachments);
@@ -317,11 +337,20 @@ async function bootstrapHistory() {
             const authorName = isAssistant
                 ? getBotCanonicalName()
                 : getUserCanonicalName(msg);
-            saveMessage(msg.channel.id, role, msg.author.id, formatAuthoredContent(authorName, storedContent), msg.createdTimestamp);
-        }
+            return {
+                role,
+                authorId: msg.author.id,
+                content: formatAuthoredContent(authorName, storedContent),
+                messageId: msg.id,
+                createdAt: msg.createdTimestamp ?? Date.now(),
+            };
+        });
+        prependCachedMessages(channelId, cachedEntries);
+        console.log(`Bootstrapped ${cachedEntries.length} historical message${cachedEntries.length === 1 ? '' : 's'} for channel ${channelId}`);
     }
     catch (err) {
-        console.error('Failed to bootstrap message history:', err);
+        console.error(`Failed to bootstrap message history for ${channelId}:`, err);
+        throw err;
     }
 }
 function hasTyping(channel) {
@@ -369,11 +398,13 @@ function hasSend(channel) {
 // ---------- Events ----------
 client.once(discord_js_1.Events.ClientReady, async (c) => {
     console.log(`Logged in as ${c.user.tag}`);
-    try {
-        await bootstrapHistory();
-    }
-    catch (err) {
-        console.error('Bootstrap history failed:', err);
+    if (MAIN_CHANNEL_ID) {
+        try {
+            await ensureChannelBootstrapped(MAIN_CHANNEL_ID);
+        }
+        catch (err) {
+            console.error('Main channel bootstrap failed:', err);
+        }
     }
 });
 client.on(discord_js_1.Events.MessageCreate, async (message) => {
@@ -389,10 +420,22 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
             ? `${normalizedUserText}\n${attachmentSummary}`
             : normalizedUserText);
         if (canCacheUserMessage) {
-            saveMessage(channelId, 'user', message.author.id, storedUserContent, message.createdTimestamp);
+            appendCachedMessage(channelId, {
+                role: 'user',
+                authorId: message.author.id,
+                content: storedUserContent,
+                messageId: message.id,
+                createdAt: message.createdTimestamp ?? Date.now(),
+            });
         }
         if (!shouldRespond(message))
             return;
+        try {
+            await ensureChannelBootstrapped(channelId);
+        }
+        catch (err) {
+            console.warn(`Failed to bootstrap history for channel ${channelId}, continuing with limited context.`, err);
+        }
         const botDisplayName = getBotCanonicalName();
         // Save user message for this channel/thread context
         // (already cached above when canCacheUserMessage true)
@@ -415,7 +458,13 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
         if (replyChunks.length > 0) {
             const [firstChunk, ...restChunks] = replyChunks;
             lastSent = await message.reply(firstChunk);
-            saveMessage(channelId, 'assistant', lastSent.author.id, formatAuthoredContent(botDisplayName, firstChunk), lastSent.createdTimestamp);
+            appendCachedMessage(channelId, {
+                role: 'assistant',
+                authorId: lastSent.author.id,
+                content: formatAuthoredContent(botDisplayName, firstChunk),
+                messageId: lastSent.id,
+                createdAt: lastSent.createdTimestamp ?? Date.now(),
+            });
             for (const chunk of restChunks) {
                 if (hasSend(message.channel)) {
                     lastSent = await message.channel.send(chunk);
@@ -423,7 +472,13 @@ client.on(discord_js_1.Events.MessageCreate, async (message) => {
                 else {
                     lastSent = await message.reply(chunk);
                 }
-                saveMessage(channelId, 'assistant', lastSent.author.id, formatAuthoredContent(botDisplayName, chunk), lastSent.createdTimestamp);
+                appendCachedMessage(channelId, {
+                    role: 'assistant',
+                    authorId: lastSent.author.id,
+                    content: formatAuthoredContent(botDisplayName, chunk),
+                    messageId: lastSent.id,
+                    createdAt: lastSent.createdTimestamp ?? Date.now(),
+                });
             }
         }
         console.log(`Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'})`);

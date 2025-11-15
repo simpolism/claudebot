@@ -12,13 +12,11 @@
   "description": "",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",
-    "better-sqlite3": "^12.4.1",
     "discord.js": "^14.24.2",
     "dotenv": "^17.2.3",
     "openai": "^4.104.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.10.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"

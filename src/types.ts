@@ -14,6 +14,9 @@ export type ImageBlock = {
 export type TextBlock = {
   type: 'text';
   text: string;
+  cache_control?: {
+    type: 'ephemeral';
+  };
 };
 
 export type ClaudeContentBlock = TextBlock | ImageBlock;
