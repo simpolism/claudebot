@@ -33,6 +33,11 @@ interface BotInstance {
   aiProvider: AIProvider;
 }
 
+// ---------- Bot-to-Bot Exchange Tracking ----------
+// Track consecutive bot messages per channel to prevent infinite loops
+const consecutiveBotMessages = new Map<string, number>();
+const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
+
 // ---------- Utility Functions ----------
 type TextThreadChannel = PublicThreadChannel | PrivateThreadChannel;
 
@@ -65,7 +70,19 @@ function shouldRespond(message: Message, client: Client): boolean {
   if (message.author.bot) return false;
   if (!client.user) return false;
 
-  return message.mentions.has(client.user);
+  if (!message.mentions.has(client.user)) return false;
+
+  // Check bot-to-bot exchange limit
+  const channelId = message.channel.id;
+  const currentCount = consecutiveBotMessages.get(channelId) || 0;
+  if (currentCount >= MAX_CONSECUTIVE_BOT_EXCHANGES) {
+    console.log(
+      `[${client.user.username}] Skipping response in ${channelId} - bot exchange limit reached (${currentCount}/${MAX_CONSECUTIVE_BOT_EXCHANGES})`,
+    );
+    return false;
+  }
+
+  return true;
 }
 
 function estimateTokens(text: string): number {
@@ -517,6 +534,19 @@ function setupBotEvents(instance: BotInstance): void {
   client.on(Events.MessageCreate, async (message) => {
     let stopTyping: (() => void) | null = null;
     try {
+      // Track bot-to-bot exchanges
+      if (isInScope(message)) {
+        const channelId = message.channel.id;
+        if (message.author.bot) {
+          // Bot message: increment counter
+          const current = consecutiveBotMessages.get(channelId) || 0;
+          consecutiveBotMessages.set(channelId, current + 1);
+        } else {
+          // Human message: reset counter
+          consecutiveBotMessages.set(channelId, 0);
+        }
+      }
+
       if (!shouldRespond(message, client)) return;
 
       const channelId = message.channel.id;
