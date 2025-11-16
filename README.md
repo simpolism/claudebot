@@ -32,9 +32,10 @@ Run multiple AI personalities in a single process:
 
 ### Conversation Context
 - Fetches directly from Discord API (Discord is source of truth)
-- Soft token limit (~100k default) - fetches until budget is met
+- Soft token limit (~100k default) - fetches until budget is met, but it's intentionally below provider max context (Claude gets 200k) so we can overflow slightly to keep the latest messages
+- Always fetches a fresh tail even when cached blocks already fill the budget, ensuring the current mention is never skipped
 - Transcript format puts entire conversation in one block
-- Thread context inheritance - when in a thread, allocates ~20% of token budget to parent channel history so the AI understands what led to the thread
+- Thread context inheritance - when in a thread, allocates ~50% of token budget to parent channel history so the AI understands what led to the thread
 
 ### Prompt Caching (Anthropic)
 - Stable block boundaries for cache hits
@@ -167,6 +168,7 @@ For Anthropic cost optimization:
 - Same bytes sent = cache hit
 - Only writes to JSON when block boundaries roll
 - Persists across process restarts
+- Cached + tail can briefly exceed `MAX_CONTEXT_TOKENS`; this is intentional because the configured budget (100k default) is still below Claude's 200k limit and ensures the newest uncached messages always make it in
 
 ### Bot-to-Bot Safety
 

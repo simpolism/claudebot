@@ -43,6 +43,22 @@ const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
 // Key format: "botId:channelId"
 const processingChannels = new Set<string>();
 
+// Keep fetching a small slice of uncached history even if cached blocks consume
+// the configured budget. `maxContextTokens` is a soft cap (e.g. 100k vs 200k window)
+// so slight overflow is OK if it keeps the current mention visible.
+const TAIL_FETCH_RATIO = 0.1;
+const MIN_TAIL_FETCH_TOKENS = 2000;
+
+function getTailFetchBudget(threadBudget: number): number {
+  if (threadBudget <= 0) {
+    return Math.max(1, MIN_TAIL_FETCH_TOKENS);
+  }
+
+  const ratioBudget = Math.floor(threadBudget * TAIL_FETCH_RATIO);
+  const minBudget = Math.max(MIN_TAIL_FETCH_TOKENS, 1);
+  return Math.min(Math.max(ratioBudget, minBudget), threadBudget);
+}
+
 // ---------- Utility Functions ----------
 type TextThreadChannel = PublicThreadChannel | PrivateThreadChannel;
 
@@ -334,13 +350,18 @@ async function fetchConversationFromDiscord(
     (sum, block) => sum + block.tokenCount,
     0,
   );
+  const tailFetchBudgetTarget = getTailFetchBudget(threadBudget);
   const remainingBudget = threadBudget - cachedTokens;
+  // Always fetch at least a small tail even when cached blocks already fill the budget.
+  // The token budget is a soft limit (e.g. 100k within Claude's 200k window) so slight
+  // overflow is acceptable if it keeps the latest uncached messages in view.
+  const fetchBudget = Math.max(remainingBudget, tailFetchBudgetTarget);
 
   // Fetch new messages after the last cached one
   const newMessages = await fetchMessagesAfter(
     channel,
     lastCachedMessageId,
-    remainingBudget,
+    fetchBudget,
     client,
   );
 

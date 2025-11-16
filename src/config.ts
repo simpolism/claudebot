@@ -23,7 +23,7 @@ export interface BotConfig {
 export const globalConfig = {
   mainChannelId: process.env.MAIN_CHANNEL_ID || '',
   maxContextTokens: parseInt(process.env.MAX_CONTEXT_TOKENS || '100000', 10),
-  maxTokens: parseInt(process.env.MAX_TOKENS || '1024', 10),
+  maxTokens: parseInt(process.env.MAX_TOKENS || '4096', 10),
   temperature: parseFloat(process.env.TEMPERATURE || '1'),
   approxCharsPerToken: parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4'),
   discordMessageLimit: 2000,
@@ -32,13 +32,13 @@ export const globalConfig = {
 // Bot configurations - add your bots here
 export const botConfigs: BotConfig[] = [
   {
-    name: 'Haiku',
+    name: 'Haiku4.5',
     discordToken: process.env.HAIKU_DISCORD_TOKEN || '',
     provider: 'anthropic',
     model: 'claude-haiku-4-5',
   },
   {
-    name: 'Kimi',
+    name: 'K2',
     discordToken: process.env.KIMI_DISCORD_TOKEN || '',
     provider: 'openai',
     model: 'moonshotai/kimi-k2-instruct-0905',

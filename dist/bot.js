@@ -1,246 +1,99 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const discord_js_1 = require("discord.js");
-const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
 const providers_1 = require("./providers");
-// ---------- Config ----------
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const MAIN_CHANNEL_ID = process.env.MAIN_CHANNEL_ID; // text channel id
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-4-5';
-const MESSAGE_CACHE_LIMIT = parseInt(process.env.MESSAGE_CACHE_LIMIT || '500', 10);
-const BOOTSTRAP_MESSAGE_LIMIT = parseInt(process.env.BOOTSTRAP_MESSAGE_LIMIT || `${MESSAGE_CACHE_LIMIT}`, 10);
-const MAX_CONTEXT_TOKENS = parseInt(process.env.MAX_CONTEXT_TOKENS || '180000', 10);
-const APPROX_CHARS_PER_TOKEN = parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4');
-const DISCORD_MESSAGE_LIMIT = 2000;
-const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '1024', 10);
-const TEMPERATURE = parseFloat(process.env.TEMPERATURE || '1');
-const CLI_SIM_MODE = parseBooleanFlag(process.env.CLI_SIM_MODE);
-const DEFAULT_SYSTEM_PROMPT = 'The assistant is in CLI simulation mode, and responds to the user\'s CLI commands only with the output of the command.';
-const SYSTEM_PROMPT = CLI_SIM_MODE ? DEFAULT_SYSTEM_PROMPT : '';
-const PREFILL_COMMAND = CLI_SIM_MODE ? '<cmd>cat untitled.txt</cmd>' : '';
-const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'moonshotai/kimi-k2-instruct-0905';
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const STARTUP_CONFIG = {
-    mainChannelId: MAIN_CHANNEL_ID || '(unset)',
-    aiProvider: AI_PROVIDER,
-    claudeModel: CLAUDE_MODEL,
-    openaiModel: OPENAI_MODEL,
-    openaiBaseURL: OPENAI_BASE_URL,
-    messageCacheLimit: MESSAGE_CACHE_LIMIT,
-    bootstrapMessageLimit: BOOTSTRAP_MESSAGE_LIMIT,
-    maxContextTokens: MAX_CONTEXT_TOKENS,
-    maxTokens: MAX_TOKENS,
-    temperature: TEMPERATURE,
-    cliSimulationMode: CLI_SIM_MODE,
-    systemPrompt: `"${SYSTEM_PROMPT}"`,
-    prefillCommand: `"${PREFILL_COMMAND}"`,
-};
-console.log('Starting bot with configuration:', STARTUP_CONFIG);
-// ---------- SQLite setup (file-based cache) ----------
-const db = new better_sqlite3_1.default('claude-cache.sqlite');
-db.pragma('journal_mode = WAL');
-db.exec(`
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel_id TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-  author_id TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_messages_channel_created_at
-  ON messages(channel_id, created_at);
-`);
-const insertMessageStmt = db.prepare(`
-  INSERT INTO messages (channel_id, role, author_id, content, created_at)
-  VALUES (?, ?, ?, ?, ?)
-`);
-const getRecentMessagesStmt = db.prepare(`
-  SELECT id, role, content, created_at
-  FROM messages
-  WHERE channel_id = ?
-  ORDER BY created_at DESC
-  LIMIT ?
-`);
-const deleteMessagesThroughStmt = db.prepare(`
-  DELETE FROM messages
-  WHERE channel_id = ?
-    AND id <= ?
-`);
-const countMessagesStmt = db.prepare(`
-  SELECT COUNT(*) as count FROM messages
-`);
-function parseBooleanFlag(value) {
-    if (!value)
-        return false;
-    switch (value.trim().toLowerCase()) {
-        case '1':
-        case 'true':
-        case 'yes':
-        case 'on':
-            return true;
-        default:
-            return false;
+const config_1 = require("./config");
+const cache_1 = require("./cache");
+// ---------- Bot-to-Bot Exchange Tracking ----------
+// Track consecutive bot messages per channel to prevent infinite loops
+const consecutiveBotMessages = new Map();
+const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
+// ---------- Channel Processing Locks ----------
+// Prevent duplicate responses when bot is tagged multiple times quickly
+// Key format: "botId:channelId"
+const processingChannels = new Set();
+// Keep fetching a small slice of uncached history even if cached blocks consume
+// the configured budget. `maxContextTokens` is a soft cap (e.g. 100k vs 200k window)
+// so slight overflow is OK if it keeps the current mention visible.
+const TAIL_FETCH_RATIO = 0.1;
+const MIN_TAIL_FETCH_TOKENS = 2000;
+function getTailFetchBudget(threadBudget) {
+    if (threadBudget <= 0) {
+        return Math.max(1, MIN_TAIL_FETCH_TOKENS);
     }
+    const ratioBudget = Math.floor(threadBudget * TAIL_FETCH_RATIO);
+    const minBudget = Math.max(MIN_TAIL_FETCH_TOKENS, 1);
+    return Math.min(Math.max(ratioBudget, minBudget), threadBudget);
 }
-function saveMessage(channelId, role, authorId, content, createdAt) {
-    insertMessageStmt.run(channelId, role, authorId, content, createdAt ?? Date.now());
-}
-// ---------- Discord client ----------
-const client = new discord_js_1.Client({
-    intents: [
-        discord_js_1.GatewayIntentBits.Guilds,
-        discord_js_1.GatewayIntentBits.GuildMessages,
-        discord_js_1.GatewayIntentBits.MessageContent,
-    ],
-    partials: [discord_js_1.Partials.Channel, discord_js_1.Partials.Message],
-});
-const aiProvider = (0, providers_1.createAIProvider)({
-    provider: AI_PROVIDER,
-    systemPrompt: SYSTEM_PROMPT,
-    prefillCommand: PREFILL_COMMAND,
-    temperature: TEMPERATURE,
-    maxTokens: MAX_TOKENS,
-    maxContextTokens: MAX_CONTEXT_TOKENS,
-    approxCharsPerToken: APPROX_CHARS_PER_TOKEN,
-    anthropicModel: CLAUDE_MODEL,
-    openaiModel: OPENAI_MODEL,
-    openaiBaseURL: OPENAI_BASE_URL,
-    openaiApiKey: OPENAI_API_KEY,
-});
 function isThreadChannel(channel) {
     return (channel.type === discord_js_1.ChannelType.PublicThread ||
         channel.type === discord_js_1.ChannelType.PrivateThread ||
         channel.type === discord_js_1.ChannelType.AnnouncementThread);
 }
-// In-scope = main channel OR threads under that channel
 function isInScope(message) {
     const channel = message.channel;
-    if (!MAIN_CHANNEL_ID) {
-        // if not set, respond anywhere (probably not what you want in production)
+    if (!config_1.globalConfig.mainChannelId) {
         return true;
     }
     if (isThreadChannel(channel)) {
-        return channel.parentId === MAIN_CHANNEL_ID;
+        return channel.parentId === config_1.globalConfig.mainChannelId;
     }
-    return channel.id === MAIN_CHANNEL_ID;
+    return channel.id === config_1.globalConfig.mainChannelId;
 }
-// We now *only* respond when explicitly mentioned, even in threads
-function shouldRespond(message) {
+function shouldRespond(message, client) {
     if (!isInScope(message))
         return false;
     if (message.author.bot)
         return false;
     if (!client.user)
         return false;
-    return message.mentions.has(client.user);
-}
-function buildConversation(channelId) {
-    const rows = getRecentMessagesStmt.all(channelId, MESSAGE_CACHE_LIMIT);
-    if (!rows.length) {
-        return [];
+    if (!message.mentions.has(client.user))
+        return false;
+    // Check bot-to-bot exchange limit
+    const channelId = message.channel.id;
+    const currentCount = consecutiveBotMessages.get(channelId) || 0;
+    if (currentCount >= MAX_CONSECUTIVE_BOT_EXCHANGES) {
+        console.log(`[${client.user.username}] Skipping response in ${channelId} - bot exchange limit reached (${currentCount}/${MAX_CONSECUTIVE_BOT_EXCHANGES})`);
+        return false;
     }
-    rows.reverse();
-    const tokenizedRows = rows.map((row) => ({
-        id: row.id,
-        role: row.role,
-        content: row.content,
-        tokens: estimateTokens(row.content) + 4,
-    }));
-    const { messages, prunedMaxId } = segmentConversationRows(tokenizedRows);
-    if (typeof prunedMaxId === 'number') {
-        try {
-            deleteMessagesThroughStmt.run(channelId, prunedMaxId);
-        }
-        catch (err) {
-            console.warn(`Failed to prune channel ${channelId} history`, err);
-        }
-    }
-    return messages;
+    return true;
 }
 function estimateTokens(text) {
-    return Math.ceil(text.length / Math.max(APPROX_CHARS_PER_TOKEN, 1));
+    return Math.ceil(text.length / Math.max(config_1.globalConfig.approxCharsPerToken, 1));
 }
-function segmentConversationRows(rows) {
-    const maxSegments = 3;
-    const targetTokensPerSegment = Math.max(1, Math.floor(MAX_CONTEXT_TOKENS / maxSegments));
-    const segments = [];
-    let totalTokens = 0;
-    let prunedMaxId;
-    const recordPrunedSegment = (segment) => {
-        if (!segment || segment.rows.length === 0)
-            return;
-        totalTokens -= segment.tokens;
-        const lastRow = segment.rows[segment.rows.length - 1];
-        if (lastRow) {
-            prunedMaxId = prunedMaxId
-                ? Math.max(prunedMaxId, lastRow.id)
-                : lastRow.id;
-        }
-    };
-    const startNewSegment = () => {
-        segments.push({ rows: [], tokens: 0 });
-    };
-    for (const row of rows) {
-        while (segments.length === maxSegments &&
-            totalTokens + row.tokens > MAX_CONTEXT_TOKENS &&
-            segments[0]?.rows.length) {
-            recordPrunedSegment(segments.shift());
-        }
-        if (segments.length === 0 ||
-            (segments.length < maxSegments &&
-                segments[segments.length - 1].tokens >= targetTokensPerSegment)) {
-            startNewSegment();
-        }
-        else if (segments.length === maxSegments &&
-            segments[segments.length - 1].tokens >= targetTokensPerSegment) {
-            recordPrunedSegment(segments.shift());
-            startNewSegment();
-        }
-        if (segments.length === 0) {
-            startNewSegment();
-        }
-        const current = segments[segments.length - 1];
-        current.rows.push(row);
-        current.tokens += row.tokens;
-        totalTokens += row.tokens;
-    }
-    const messages = segments.flatMap((segment) => segment.rows.map((row) => ({
-        role: row.role,
-        content: row.content,
-    })));
-    return { messages, prunedMaxId };
+function getUserCanonicalName(message) {
+    return (message.author.username ??
+        message.author.globalName ??
+        message.author.tag);
 }
-function chunkReplyText(text) {
-    if (text.length <= DISCORD_MESSAGE_LIMIT) {
-        return [text];
-    }
-    const chunks = [];
-    let remaining = text;
-    while (remaining.length > 0) {
-        if (remaining.length <= DISCORD_MESSAGE_LIMIT) {
-            chunks.push(remaining);
-            break;
+function getBotCanonicalName(client) {
+    return (client.user?.username ??
+        client.user?.globalName ??
+        client.user?.tag ??
+        'Bot');
+}
+function formatAuthoredContent(authorName, content) {
+    const normalized = content.trim();
+    const finalContent = normalized.length ? normalized : '(empty message)';
+    return `${authorName}: ${finalContent}`;
+}
+const USER_MENTION_REGEX = /<@!?(\d+)>/g;
+function formatMentionName(user) {
+    return user.username ?? user.globalName ?? user.tag;
+}
+function replaceUserMentions(content, message, client) {
+    if (!content)
+        return content;
+    return content.replace(USER_MENTION_REGEX, (match, userId) => {
+        const mentionedUser = message.mentions.users.get(userId) ??
+            client.users.cache.get(userId) ??
+            null;
+        if (!mentionedUser) {
+            return match;
         }
-        let sliceEnd = DISCORD_MESSAGE_LIMIT;
-        const newlineIndex = remaining.lastIndexOf('\n', sliceEnd);
-        const spaceIndex = remaining.lastIndexOf(' ', sliceEnd);
-        const breakIndex = Math.max(newlineIndex, spaceIndex);
-        if (breakIndex > sliceEnd * 0.5) {
-            sliceEnd = breakIndex;
-        }
-        const chunk = remaining.slice(0, sliceEnd).trimEnd();
-        chunks.push(chunk);
-        remaining = remaining.slice(sliceEnd).trimStart();
-    }
-    return chunks;
+        return `@${formatMentionName(mentionedUser)}`;
+    });
 }
 function isImageAttachment(attachment) {
     const contentType = attachment.contentType ?? '';
@@ -278,97 +131,199 @@ function getImageBlocksFromAttachments(attachments) {
     });
     return blocks;
 }
-function getUserCanonicalName(message) {
-    return (message.author.username ??
-        message.author.globalName ??
-        message.author.tag);
-}
-function getBotCanonicalName() {
-    return (client.user?.username ??
-        client.user?.globalName ??
-        client.user?.tag ??
-        'Claude Bot');
-}
-function formatAuthoredContent(authorName, content) {
-    const normalized = content.trim();
-    const finalContent = normalized.length ? normalized : '(empty message)';
-    return `${authorName}: ${finalContent}`;
-}
-const USER_MENTION_REGEX = /<@!?(\d+)>/g;
-function formatMentionName(user) {
-    return (user.username ??
-        user.globalName ??
-        user.tag);
-}
-function replaceUserMentions(content, message) {
-    if (!content)
-        return content;
-    return content.replace(USER_MENTION_REGEX, (match, userId) => {
-        const mentionedUser = message.mentions.users.get(userId) ??
-            client.users.cache.get(userId) ??
-            null;
-        if (!mentionedUser) {
-            return match;
-        }
-        return `@${formatMentionName(mentionedUser)}`;
-    });
-}
-async function bootstrapHistory() {
-    const result = countMessagesStmt.get();
-    const count = result?.count ?? 0;
-    if (count > 0) {
-        return;
+// Fetch messages after a given message ID
+async function fetchMessagesAfter(channel, afterMessageId, tokenBudget, client) {
+    if (!channel.isTextBased()) {
+        return [];
     }
-    if (!MAIN_CHANNEL_ID) {
-        console.warn('Cannot bootstrap history: MAIN_CHANNEL_ID is unset.');
-        return;
-    }
-    try {
-        const channel = await client.channels.fetch(MAIN_CHANNEL_ID);
-        if (!channel || !channel.isTextBased()) {
-            console.warn(`Unable to bootstrap history: channel ${MAIN_CHANNEL_ID} is not text-based or could not be fetched.`);
-            return;
+    const messages = [];
+    let totalTokens = 0;
+    // Fetch all messages we need
+    const allFetched = [];
+    let lastId;
+    while (totalTokens < tokenBudget) {
+        const fetched = await channel.messages.fetch({
+            limit: 100,
+            before: lastId,
+        });
+        if (fetched.size === 0) {
+            break;
         }
-        const collectedMessages = [];
-        let lastId;
-        while (collectedMessages.length < BOOTSTRAP_MESSAGE_LIMIT) {
-            const remaining = BOOTSTRAP_MESSAGE_LIMIT - collectedMessages.length;
-            const fetchLimit = Math.min(remaining, 100);
-            const fetched = await channel.messages.fetch({
-                limit: fetchLimit,
-                before: lastId,
-            });
-            if (fetched.size === 0) {
+        let reachedCachedMessage = false;
+        for (const msg of fetched.values()) {
+            // If we've reached the last cached message, stop
+            if (afterMessageId && msg.id === afterMessageId) {
+                reachedCachedMessage = true;
                 break;
             }
-            const newMessages = [...fetched.values()];
-            collectedMessages.push(...newMessages);
-            lastId = newMessages[newMessages.length - 1]?.id;
+            allFetched.push(msg);
         }
-        const sortedMessages = collectedMessages
-            .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-            .slice(-BOOTSTRAP_MESSAGE_LIMIT);
-        console.log(`Bootstrapping ${sortedMessages.length} historical message${sortedMessages.length === 1 ? '' : 's'} from channel ${MAIN_CHANNEL_ID}`);
-        for (const msg of sortedMessages) {
-            const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
-            const role = isAssistant ? 'assistant' : 'user';
-            const attachmentSummary = buildAttachmentSummary(msg.attachments);
-            const messageContent = replaceUserMentions(msg.content || '(empty message)', msg);
-            const storedContent = attachmentSummary
-                ? `${messageContent}\n${attachmentSummary}`
-                : messageContent;
-            const authorName = isAssistant
-                ? getBotCanonicalName()
-                : getUserCanonicalName(msg);
-            saveMessage(msg.channel.id, role, msg.author.id, formatAuthoredContent(authorName, storedContent), msg.createdTimestamp);
+        if (reachedCachedMessage) {
+            break;
+        }
+        lastId = fetched.last()?.id;
+    }
+    // Process in chronological order (oldest first)
+    allFetched.reverse();
+    for (const msg of allFetched) {
+        const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
+        const role = isAssistant ? 'assistant' : 'user';
+        const attachmentSummary = buildAttachmentSummary(msg.attachments);
+        const messageContent = replaceUserMentions(msg.content || '(empty message)', msg, client);
+        const storedContent = attachmentSummary
+            ? `${messageContent}\n${attachmentSummary}`
+            : messageContent;
+        const authorName = isAssistant
+            ? getBotCanonicalName(client)
+            : getUserCanonicalName(msg);
+        const formattedText = formatAuthoredContent(authorName, storedContent);
+        const tokens = estimateTokens(formattedText) + 4;
+        if (totalTokens + tokens > tokenBudget) {
+            break;
+        }
+        messages.push({
+            id: msg.id,
+            formattedText,
+            tokens,
+            role,
+        });
+        totalTokens += tokens;
+    }
+    return messages;
+}
+async function fetchConversationFromDiscord(channel, maxContextTokens, client) {
+    if (!channel.isTextBased()) {
+        return { cachedBlocks: [], tail: [] };
+    }
+    // Check if this is a thread - if so, include parent channel context
+    let parentCachedBlocks = [];
+    let parentContextTokens = 0;
+    const PARENT_CONTEXT_RATIO = 0.5; // Allocate 50% of budget to parent context (cached blocks are cheap!)
+    if (isThreadChannel(channel) && channel.parent && channel.parent.isTextBased()) {
+        const parentChannelId = channel.parent.id;
+        const parentBudget = Math.floor(maxContextTokens * PARENT_CONTEXT_RATIO);
+        // Reuse parent's cached blocks (these will hit Anthropic's cache)
+        const existingParentBlocks = (0, cache_1.getCachedBlocks)(parentChannelId);
+        for (const block of existingParentBlocks) {
+            if (parentContextTokens + block.tokenCount <= parentBudget) {
+                parentCachedBlocks.push(block.text);
+                parentContextTokens += block.tokenCount;
+            }
+            else {
+                break;
+            }
+        }
+        if (parentCachedBlocks.length > 0) {
+            console.log(`[${getBotCanonicalName(client)}] Thread detected, using ${parentCachedBlocks.length} parent cached blocks (~${parentContextTokens} tokens)`);
         }
     }
-    catch (err) {
-        console.error('Failed to bootstrap message history:', err);
+    // Adjust budget for thread messages
+    const threadBudget = maxContextTokens - parentContextTokens;
+    const channelId = channel.id;
+    // Get existing cached blocks
+    const existingCachedBlocks = (0, cache_1.getCachedBlocks)(channelId);
+    const lastCachedMessageId = (0, cache_1.getLastCachedMessageId)(channelId);
+    // Calculate token budget used by cached blocks
+    const cachedTokens = existingCachedBlocks.reduce((sum, block) => sum + block.tokenCount, 0);
+    const tailFetchBudgetTarget = getTailFetchBudget(threadBudget);
+    const remainingBudget = threadBudget - cachedTokens;
+    // Always fetch at least a small tail even when cached blocks already fill the budget.
+    // The token budget is a soft limit (e.g. 100k within Claude's 200k window) so slight
+    // overflow is acceptable if it keeps the latest uncached messages in view.
+    const fetchBudget = Math.max(remainingBudget, tailFetchBudgetTarget);
+    // Fetch new messages after the last cached one
+    const newMessages = await fetchMessagesAfter(channel, lastCachedMessageId, fetchBudget, client);
+    // Update cache if we have significant new messages
+    // (This will create new cached blocks if needed)
+    if (newMessages.length > 0) {
+        (0, cache_1.updateCache)(channelId, newMessages);
     }
+    // Get potentially updated cached blocks
+    const finalCachedBlocks = (0, cache_1.getCachedBlocks)(channelId);
+    const finalLastCachedId = (0, cache_1.getLastCachedMessageId)(channelId);
+    // Build the tail (messages after the last cached block)
+    const tail = [];
+    for (const msg of newMessages) {
+        // Only include messages that aren't part of a cached block
+        // Compare as BigInt since Discord snowflakes are numeric
+        if (finalLastCachedId &&
+            BigInt(msg.id) <= BigInt(finalLastCachedId)) {
+            continue;
+        }
+        tail.push({
+            role: msg.role,
+            content: msg.formattedText,
+        });
+    }
+    // Combine parent context with thread context
+    const allCachedBlocks = [
+        ...parentCachedBlocks,
+        ...finalCachedBlocks.map((block) => block.text),
+    ];
+    const totalCachedTokens = parentContextTokens +
+        finalCachedBlocks.reduce((sum, block) => sum + block.tokenCount, 0);
+    const tailTokens = tail.reduce((sum, msg) => sum + estimateTokens(msg.content) + 4, 0);
+    const contextType = parentCachedBlocks.length > 0 ? 'Thread' : 'Channel';
+    console.log(`[${getBotCanonicalName(client)}] ${contextType} conversation: ${allCachedBlocks.length} cached blocks (~${totalCachedTokens} tokens) + ${tail.length} tail messages (~${tailTokens} tokens)`);
+    return {
+        cachedBlocks: allCachedBlocks,
+        tail,
+    };
+}
+// ---------- Response Formatting ----------
+function chunkReplyText(text) {
+    if (text.length <= config_1.globalConfig.discordMessageLimit) {
+        return [text];
+    }
+    const chunks = [];
+    let remaining = text;
+    while (remaining.length > 0) {
+        if (remaining.length <= config_1.globalConfig.discordMessageLimit) {
+            chunks.push(remaining);
+            break;
+        }
+        let sliceEnd = config_1.globalConfig.discordMessageLimit;
+        const newlineIndex = remaining.lastIndexOf('\n', sliceEnd);
+        const spaceIndex = remaining.lastIndexOf(' ', sliceEnd);
+        const breakIndex = Math.max(newlineIndex, spaceIndex);
+        if (breakIndex > sliceEnd * 0.5) {
+            sliceEnd = breakIndex;
+        }
+        const chunk = remaining.slice(0, sliceEnd).trimEnd();
+        chunks.push(chunk);
+        remaining = remaining.slice(sliceEnd).trimStart();
+    }
+    return chunks;
+}
+function convertOutputMentions(text, channel, client) {
+    if (!channel.isTextBased())
+        return text;
+    const usernameToId = new Map();
+    client.users.cache.forEach((user) => {
+        usernameToId.set(user.username.toLowerCase(), user.id);
+        if (user.globalName) {
+            usernameToId.set(user.globalName.toLowerCase(), user.id);
+        }
+    });
+    if ('guild' in channel && channel.guild) {
+        channel.guild.members.cache.forEach((member) => {
+            usernameToId.set(member.user.username.toLowerCase(), member.user.id);
+            if (member.nickname) {
+                usernameToId.set(member.nickname.toLowerCase(), member.user.id);
+            }
+            if (member.user.globalName) {
+                usernameToId.set(member.user.globalName.toLowerCase(), member.user.id);
+            }
+        });
+    }
+    return text.replace(/@(\w+)/g, (match, name) => {
+        const id = usernameToId.get(name.toLowerCase());
+        return id ? `<@${id}>` : match;
+    });
 }
 function hasTyping(channel) {
-    return !!channel && typeof channel.sendTyping === 'function';
+    return (!!channel &&
+        typeof channel.sendTyping === 'function');
 }
 function startTypingIndicator(channel) {
     if (!hasTyping(channel)) {
@@ -407,89 +362,168 @@ function startTypingIndicator(channel) {
     };
 }
 function hasSend(channel) {
-    return !!channel && typeof channel.send === 'function';
+    return (!!channel && typeof channel.send === 'function');
 }
-// ---------- Events ----------
-client.once(discord_js_1.Events.ClientReady, async (c) => {
-    console.log(`Logged in as ${c.user.tag}`);
-    try {
-        await bootstrapHistory();
-    }
-    catch (err) {
-        console.error('Bootstrap history failed:', err);
-    }
-});
-client.on(discord_js_1.Events.MessageCreate, async (message) => {
-    let stopTyping = null;
-    try {
-        const channelId = message.channel.id;
-        const userContent = message.content || '(empty message)';
-        const canCacheUserMessage = isInScope(message) && !message.author.bot;
-        const attachmentSummary = buildAttachmentSummary(message.attachments);
-        const userDisplayName = getUserCanonicalName(message);
-        const normalizedUserText = replaceUserMentions(userContent, message);
-        const storedUserContent = formatAuthoredContent(userDisplayName, attachmentSummary
-            ? `${normalizedUserText}\n${attachmentSummary}`
-            : normalizedUserText);
-        if (canCacheUserMessage) {
-            saveMessage(channelId, 'user', message.author.id, storedUserContent, message.createdTimestamp);
-        }
-        if (!shouldRespond(message))
-            return;
-        const botDisplayName = getBotCanonicalName();
-        // Save user message for this channel/thread context
-        // (already cached above when canCacheUserMessage true)
-        // Build conversation (recent history + this new message)
-        const conversation = buildConversation(channelId);
-        // Call Claude
-        stopTyping = startTypingIndicator(message.channel);
-        const imageBlocks = getImageBlocksFromAttachments(message.attachments);
-        const claudeReply = await aiProvider.send({
-            conversation,
-            botDisplayName,
-            imageBlocks,
-        });
-        const replyText = claudeReply.text;
-        stopTyping();
-        stopTyping = null;
-        // Send reply (chunked to satisfy Discord's message length limit)
-        const replyChunks = chunkReplyText(replyText);
-        let lastSent = null;
-        if (replyChunks.length > 0) {
-            const [firstChunk, ...restChunks] = replyChunks;
-            lastSent = await message.reply(firstChunk);
-            saveMessage(channelId, 'assistant', lastSent.author.id, formatAuthoredContent(botDisplayName, firstChunk), lastSent.createdTimestamp);
-            for (const chunk of restChunks) {
-                if (hasSend(message.channel)) {
-                    lastSent = await message.channel.send(chunk);
+// ---------- Bot Instance Setup ----------
+function createBotInstance(botConfig) {
+    const resolved = (0, config_1.resolveConfig)(botConfig);
+    const client = new discord_js_1.Client({
+        intents: [
+            discord_js_1.GatewayIntentBits.Guilds,
+            discord_js_1.GatewayIntentBits.GuildMessages,
+            discord_js_1.GatewayIntentBits.MessageContent,
+        ],
+        partials: [discord_js_1.Partials.Channel, discord_js_1.Partials.Message],
+    });
+    const systemPrompt = resolved.cliSimMode
+        ? "The assistant is in CLI simulation mode, and responds to the user's CLI commands only with the output of the command."
+        : '';
+    const prefillCommand = resolved.cliSimMode
+        ? '<cmd>cat untitled.txt</cmd>'
+        : '';
+    const aiProvider = (0, providers_1.createAIProvider)({
+        provider: resolved.provider,
+        systemPrompt,
+        prefillCommand,
+        temperature: resolved.temperature,
+        maxTokens: resolved.maxTokens,
+        maxContextTokens: resolved.maxContextTokens,
+        approxCharsPerToken: config_1.globalConfig.approxCharsPerToken,
+        anthropicModel: resolved.model,
+        openaiModel: resolved.model,
+        openaiBaseURL: resolved.openaiBaseUrl || 'https://api.openai.com/v1',
+        openaiApiKey: resolved.openaiApiKey || '',
+    });
+    return { config: botConfig, client, aiProvider };
+}
+function setupBotEvents(instance) {
+    const { config, client, aiProvider } = instance;
+    const resolved = (0, config_1.resolveConfig)(config);
+    client.once(discord_js_1.Events.ClientReady, (c) => {
+        console.log(`[${config.name}] Logged in as ${c.user.tag}`);
+    });
+    client.on(discord_js_1.Events.MessageCreate, async (message) => {
+        let stopTyping = null;
+        try {
+            // Track bot-to-bot exchanges
+            if (isInScope(message)) {
+                const channelId = message.channel.id;
+                if (message.author.bot) {
+                    // Bot message: increment counter
+                    const current = consecutiveBotMessages.get(channelId) || 0;
+                    consecutiveBotMessages.set(channelId, current + 1);
                 }
                 else {
-                    lastSent = await message.reply(chunk);
+                    // Human message: reset counter
+                    consecutiveBotMessages.set(channelId, 0);
                 }
-                saveMessage(channelId, 'assistant', lastSent.author.id, formatAuthoredContent(botDisplayName, chunk), lastSent.createdTimestamp);
+            }
+            if (!shouldRespond(message, client))
+                return;
+            const channelId = message.channel.id;
+            const botDisplayName = getBotCanonicalName(client);
+            // Check if this bot is already processing this channel
+            const lockKey = `${client.user?.id}:${channelId}`;
+            if (processingChannels.has(lockKey)) {
+                console.log(`[${config.name}] Already processing ${channelId}, skipping duplicate`);
+                return;
+            }
+            // Acquire lock
+            processingChannels.add(lockKey);
+            try {
+                const conversationData = await fetchConversationFromDiscord(message.channel, resolved.maxContextTokens, client);
+                stopTyping = startTypingIndicator(message.channel);
+                const imageBlocks = getImageBlocksFromAttachments(message.attachments);
+                const aiReply = await aiProvider.send({
+                    conversationData,
+                    botDisplayName,
+                    imageBlocks,
+                });
+                const replyText = aiReply.text;
+                stopTyping();
+                stopTyping = null;
+                const formattedReplyText = convertOutputMentions(replyText, message.channel, client);
+                const replyChunks = chunkReplyText(formattedReplyText);
+                let lastSent = null;
+                if (replyChunks.length > 0) {
+                    const [firstChunk, ...restChunks] = replyChunks;
+                    lastSent = await message.reply(firstChunk);
+                    for (const chunk of restChunks) {
+                        if (hasSend(message.channel)) {
+                            lastSent = await message.channel.send(chunk);
+                        }
+                        else {
+                            lastSent = await message.reply(chunk);
+                        }
+                    }
+                }
+                console.log(`[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'})`);
+            }
+            finally {
+                // Release lock
+                processingChannels.delete(lockKey);
             }
         }
-        console.log(`Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'})`);
+        catch (err) {
+            console.error(`[${config.name}] Error handling message:`, err);
+            try {
+                await message.reply('Sorry, I hit an error. Check the bot logs.');
+            }
+            catch {
+                // ignore
+            }
+        }
+        finally {
+            stopTyping?.();
+        }
+    });
+}
+// ---------- Main ----------
+async function main() {
+    // Load conversation cache for stable prompt caching
+    (0, cache_1.loadCache)();
+    console.log('Starting multi-bot system with configuration:', {
+        mainChannelId: config_1.globalConfig.mainChannelId || '(unset)',
+        maxContextTokens: config_1.globalConfig.maxContextTokens,
+        maxTokens: config_1.globalConfig.maxTokens,
+        temperature: config_1.globalConfig.temperature,
+        bots: config_1.activeBotConfigs.map((c) => ({
+            name: c.name,
+            provider: c.provider,
+            model: c.model,
+        })),
+    });
+    if (config_1.activeBotConfigs.length === 0) {
+        console.error('No bots configured with valid tokens. Exiting.');
+        process.exit(1);
+    }
+    const instances = [];
+    for (const config of config_1.activeBotConfigs) {
+        const instance = createBotInstance(config);
+        setupBotEvents(instance);
+        instances.push(instance);
+    }
+    // Login all bots
+    const loginPromises = instances.map(async (instance) => {
+        try {
+            await instance.client.login(instance.config.discordToken);
+            console.log(`[${instance.config.name}] Login successful`);
+        }
+        catch (err) {
+            console.error(`[${instance.config.name}] Failed to login:`, err);
+            throw err;
+        }
+    });
+    try {
+        await Promise.all(loginPromises);
+        console.log('All bots logged in successfully');
     }
     catch (err) {
-        console.error('Error handling message:', err);
-        try {
-            await message.reply("Sorry, I hit an error. Check the bot logs.");
-        }
-        catch {
-            // ignore
-        }
+        console.error('One or more bots failed to login. Exiting.');
+        process.exit(1);
     }
-    finally {
-        stopTyping?.();
-    }
-});
-// ---------- Start ----------
-if (!DISCORD_TOKEN) {
-    console.error('Missing DISCORD_TOKEN in .env');
-    process.exit(1);
 }
-client.login(DISCORD_TOKEN).catch((err) => {
-    console.error('Failed to login to Discord:', err);
+main().catch((err) => {
+    console.error('Fatal error:', err);
     process.exit(1);
 });

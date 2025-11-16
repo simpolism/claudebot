@@ -31,7 +31,8 @@ class AnthropicProvider {
         });
     }
     async send(params) {
-        const { conversation, botDisplayName, imageBlocks } = params;
+        const { conversationData, botDisplayName, imageBlocks } = params;
+        const { cachedBlocks, tail } = conversationData;
         const trimmedSystemPrompt = this.systemPrompt.trim();
         const systemBlocks = trimmedSystemPrompt
             ? [
@@ -45,7 +46,9 @@ class AnthropicProvider {
                 },
             ]
             : undefined;
-        const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
+        // Build speaker list from both cached blocks and tail
+        const allText = [...cachedBlocks, ...tail.map((m) => m.content)].join('\n');
+        const trackedSpeakers = extractSpeakersFromText(allText, botDisplayName);
         const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
         const commandBlocks = this.prefillCommand
             ? [
@@ -55,7 +58,27 @@ class AnthropicProvider {
                 },
             ]
             : [];
-        const conversationBlocks = buildSegmentedConversationBlocks(conversation, this.maxContextTokens, this.approxCharsPerToken);
+        // Build conversation blocks with stable caching
+        const conversationBlocks = [];
+        // Cached blocks - these should hit the cache
+        for (const blockText of cachedBlocks) {
+            conversationBlocks.push({
+                type: 'text',
+                text: blockText + '\n',
+                cache_control: {
+                    type: 'ephemeral',
+                    ttl: '1h',
+                },
+            });
+        }
+        // Tail - fresh messages, no cache
+        if (tail.length > 0) {
+            const tailText = tail.map((m) => m.content).join('\n');
+            conversationBlocks.push({
+                type: 'text',
+                text: tailText,
+            });
+        }
         if (imageBlocks.length > 0) {
             conversationBlocks.push(...imageBlocks);
         }
@@ -129,9 +152,11 @@ class OpenAIProvider {
         });
     }
     async send(params) {
-        const { conversation, botDisplayName, imageBlocks } = params;
-        const transcriptText = buildTranscript(conversation);
-        const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
+        const { conversationData, botDisplayName, imageBlocks } = params;
+        const { cachedBlocks, tail } = conversationData;
+        const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
+        const allText = [...cachedBlocks, ...tail.map((m) => m.content)].join('\n');
+        const trackedSpeakers = extractSpeakersFromText(allText, botDisplayName);
         const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
         const trimmedSystemPrompt = this.systemPrompt.trim();
         const messages = [];
@@ -220,66 +245,12 @@ function finalizeResponse(text, guard) {
         truncatedSpeaker: guard.truncatedSpeaker,
     };
 }
-function buildTranscript(conversation) {
-    return conversation
-        .map((msg) => msg.content)
-        .join('\n')
-        .trim();
-}
-function buildSegmentedConversationBlocks(conversation, maxContextTokens, approxCharsPerToken) {
-    if (!conversation.length) {
-        return [];
+function buildTranscriptFromData(cachedBlocks, tail) {
+    const parts = [...cachedBlocks];
+    if (tail.length > 0) {
+        parts.push(tail.map((m) => m.content).join('\n'));
     }
-    const maxSegments = 3;
-    const targetTokensPerSegment = Math.max(1, Math.floor(maxContextTokens / maxSegments));
-    const segments = [];
-    let totalTokens = 0;
-    conversation.forEach((message) => {
-        const text = message.content;
-        const messageTokens = estimateTokensApprox(text, approxCharsPerToken) + 4;
-        while (segments.length === maxSegments &&
-            totalTokens + messageTokens > maxContextTokens &&
-            segments[0].messages.length > 0) {
-            totalTokens -= segments[0].tokens;
-            segments.shift();
-        }
-        if (segments.length === 0 ||
-            (segments.length < maxSegments &&
-                segments[segments.length - 1].tokens >= targetTokensPerSegment)) {
-            segments.push({ messages: [], tokens: 0 });
-        }
-        else if (segments.length === maxSegments &&
-            segments[segments.length - 1].tokens >= targetTokensPerSegment) {
-            segments.push({ messages: [], tokens: 0 });
-            totalTokens -= segments[0].tokens;
-            segments.shift();
-        }
-        if (segments.length === 0) {
-            segments.push({ messages: [], tokens: 0 });
-        }
-        const current = segments[segments.length - 1];
-        current.messages.push(text);
-        current.tokens += messageTokens;
-        totalTokens += messageTokens;
-    });
-    return segments.map((segment, index) => {
-        const isLast = index === segments.length - 1;
-        const joined = segment.messages.join('\n').trim() || '(empty message)';
-        const block = {
-            type: 'text',
-            text: isLast ? joined : `${joined}\n`,
-        };
-        if (!isLast) {
-            block.cache_control = {
-                type: 'ephemeral',
-                ttl: '1h',
-            };
-        }
-        return block;
-    });
-}
-function estimateTokensApprox(text, approxCharsPerToken) {
-    return Math.ceil(text.length / Math.max(approxCharsPerToken, 1));
+    return parts.join('\n').trim();
 }
 function extractOpenAIDelta(chunk) {
     if (!chunk?.choices?.length)
@@ -312,26 +283,22 @@ function extractOpenAIDelta(chunk) {
 function escapeRegExp(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
-function extractAuthorName(content) {
-    const colonIndex = content.indexOf(':');
-    if (colonIndex === -1) {
-        return null;
-    }
-    return content.slice(0, colonIndex).trim();
-}
-function getTrackedUserNames(conversation, botDisplayName) {
+function extractSpeakersFromText(text, botDisplayName) {
     const normalizedBot = botDisplayName.toLowerCase();
     const names = new Set();
-    conversation.forEach((message) => {
-        if (message.role !== 'user')
-            return;
-        const authorName = extractAuthorName(message.content);
-        if (!authorName)
-            return;
-        if (authorName.toLowerCase() === normalizedBot)
-            return;
-        names.add(authorName);
-    });
+    // Match "Name:" at the start of lines
+    const lines = text.split('\n');
+    for (const line of lines) {
+        const colonIndex = line.indexOf(':');
+        if (colonIndex === -1)
+            continue;
+        const name = line.slice(0, colonIndex).trim();
+        if (!name)
+            continue;
+        if (name.toLowerCase() === normalizedBot)
+            continue;
+        names.add(name);
+    }
     return [...names];
 }
 function buildFragmentationRegex(names) {
