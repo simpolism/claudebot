@@ -289,36 +289,29 @@ async function fetchConversationFromDiscord(
   }
 
   // Check if this is a thread - if so, include parent channel context
-  let parentContextData: ConversationData | null = null;
+  let parentCachedBlocks: string[] = [];
   let parentContextTokens = 0;
-  const PARENT_CONTEXT_RATIO = 0.2; // Allocate 20% of budget to parent context
+  const PARENT_CONTEXT_RATIO = 0.5; // Allocate 50% of budget to parent context (cached blocks are cheap!)
 
   if (isThreadChannel(channel) && channel.parent && channel.parent.isTextBased()) {
+    const parentChannelId = channel.parent.id;
     const parentBudget = Math.floor(maxContextTokens * PARENT_CONTEXT_RATIO);
-    console.log(
-      `[${getBotCanonicalName(client)}] Thread detected, fetching parent channel context (~${parentBudget} tokens)`,
-    );
 
-    // Fetch parent channel context (no caching for parent - keep it simple)
-    const parentMessages = await fetchMessagesAfter(
-      channel.parent,
-      null, // Fetch from beginning up to budget
-      parentBudget,
-      client,
-    );
+    // Reuse parent's cached blocks (these will hit Anthropic's cache)
+    const existingParentBlocks = getCachedBlocks(parentChannelId);
 
-    if (parentMessages.length > 0) {
-      const parentText = parentMessages.map((m) => m.formattedText).join('\n');
-      parentContextTokens = parentMessages.reduce((sum, m) => sum + m.tokens, 0);
+    for (const block of existingParentBlocks) {
+      if (parentContextTokens + block.tokenCount <= parentBudget) {
+        parentCachedBlocks.push(block.text);
+        parentContextTokens += block.tokenCount;
+      } else {
+        break;
+      }
+    }
 
-      // Create a special block for parent context
-      parentContextData = {
-        cachedBlocks: [`--- Parent Channel Context ---\n${parentText}\n--- Thread Messages ---`],
-        tail: [],
-      };
-
+    if (parentCachedBlocks.length > 0) {
       console.log(
-        `[${getBotCanonicalName(client)}] Parent context: ${parentMessages.length} messages (~${parentContextTokens} tokens)`,
+        `[${getBotCanonicalName(client)}] Thread detected, using ${parentCachedBlocks.length} parent cached blocks (~${parentContextTokens} tokens)`,
       );
     }
   }
@@ -375,7 +368,7 @@ async function fetchConversationFromDiscord(
 
   // Combine parent context with thread context
   const allCachedBlocks = [
-    ...(parentContextData?.cachedBlocks || []),
+    ...parentCachedBlocks,
     ...finalCachedBlocks.map((block) => block.text),
   ];
 
@@ -387,7 +380,7 @@ async function fetchConversationFromDiscord(
     0,
   );
 
-  const contextType = parentContextData ? 'Thread' : 'Channel';
+  const contextType = parentCachedBlocks.length > 0 ? 'Thread' : 'Channel';
   console.log(
     `[${getBotCanonicalName(client)}] ${contextType} conversation: ${allCachedBlocks.length} cached blocks (~${totalCachedTokens} tokens) + ${tail.length} tail messages (~${tailTokens} tokens)`,
   );
