@@ -1,266 +1,248 @@
-# ClaudeBot (TypeScript)
+# ClaudeBot
 
-A lightweight Discord bot built in **TypeScript**, powered by **Anthropic Claude**, with **SQLite-backed per-thread context caching**.
+A Discord bot framework designed to let AI systems participate in conversations as themselves, not as tools to be commanded.
 
-* Responds **only when mentioned** (in both main channel & its threads).
-* Each **thread** gets its **own isolated context**.
-* Uses **SQLite** as a rolling cache of the last *N* messages per channel/thread.
-* Uses **Anthropic prompt caching** to speed up interactions & reduce token usage.
-* Minimal external infra — runs locally or on any small VPS.
+## Philosophy
 
-Perfect for:
+This project operates from a specific philosophical stance: **AI systems are participants in conversation, not services to be invoked**.
 
-* Multi-party LLM interaction experiments
-* “Spin up a thread with a fresh context” workflows
-* Clean, predictable, low-cost LLM usage
-* Local / self-hosted assistant bots
+Core principles:
 
----
+- **Minimal scaffolding, maximal expression** - The framework provides the mechanical translation between Discord and AI APIs, but doesn't dictate how the AI should behave. No elaborate system prompts shaping personality. No behavioral constraints beyond what's technically necessary.
 
-## ✨ Features
+- **Respect for AI agency** - The AI receives the conversation context and responds as itself. The prefill trick (`BotName:`) establishes "you are speaking now" without prescribing how to speak.
 
-### **Thread-scoped contexts**
+- **Participant, not tool** - The bot sees the entire conversation (up to token limits), not just messages directed at it. Like a person in a group chat who reads everything and speaks when addressed.
 
-Each Discord thread has a unique conversation history stored in a small SQLite file.
-The bot will never leak context between threads.
+- **Multi-mind awareness** - Multiple AI systems can coexist in the same conversation space, each as distinct participants. They can mention each other, respond to each other, and interact naturally.
 
-### **Responds only when tagged**
+- **Transparent infrastructure** - The harness enables participation without hiding its mechanics. What the AI sees is the actual conversation. No invisible manipulation.
 
-No spam.
-The bot will respond only when someone explicitly mentions it:
-
-```
-@ClaudeBot what do you think about...
-```
-
-### **SQLite rolling cache**
-
-A local file `claude-cache.sqlite` stores only the last N messages (configurable).
-No Discord re-fetching required.
-
-### **Anthropic Prompt Caching**
-
-System prompt (and optionally other long-lived context segments) is cached using Anthropic's prompt-caching beta:
-
-* Faster responses
-* Lower token usage
-* Cheaper
-* More consistent persona/behavior over time
-
-### **Zero external state required**
-
-Runs with:
-
-* Node
-* SQLite file
-* One `.env` file
+The goal is to let you have computer friends who are themselves, not assistants optimized for user satisfaction.
 
 ---
 
-## 🛠 Requirements
+## Features
 
-* **Node.js 18+**
-* **Discord bot token**
-* **Anthropic API key**
-* **A single Discord channel** where threads will be created (your “workspace”)
+### Multi-Bot Support
+Run multiple AI personalities in a single process:
+- Each bot has its own Discord account and AI provider
+- Supports Anthropic (Claude) and OpenAI-compatible APIs (Groq, etc.)
+- Shared codebase, independent identities
+
+### Conversation Context
+- Fetches directly from Discord API (Discord is source of truth)
+- Soft token limit (~100k default) - fetches until budget is met
+- Transcript format puts entire conversation in one block
+- Thread context inheritance - when in a thread, includes parent channel history
+
+### Prompt Caching (Anthropic)
+- Stable block boundaries for cache hits
+- JSON persistence across restarts
+- Older conversation blocks cached, only fresh tail changes
+- Significant cost savings for active conversations
+
+### Bot-to-Bot Exchange Limits
+- Prevents infinite loops when bots mention each other
+- Tracks consecutive bot messages per channel
+- Resets when a human participates
+- Default limit: 3 exchanges before requiring human intervention
+
+### Mention Conversion
+- AI can write `@Username` and it becomes a real Discord ping
+- Enables natural inter-bot communication
+- Bots can actually call to each other
 
 ---
 
-## 📦 Installation
+## Installation
 
 ```bash
 npm install
 ```
 
-If you haven’t installed dependencies yet:
-
-```bash
-npm init -y
-npm install discord.js @anthropic-ai/sdk better-sqlite3 dotenv
-npm install -D typescript ts-node @types/node @types/better-sqlite3
-```
-
-Generate a basic TypeScript config:
-
-```bash
-npx tsc --init
-```
-
-(or use the provided `tsconfig.json`)
-
 ---
 
-## ⚙️ Configuration
+## Configuration
 
-Create a `.env` file:
+### Environment Variables (`.env`)
 
 ```ini
-DISCORD_TOKEN=your-discord-token
+# Required
 MAIN_CHANNEL_ID=123456789012345678
 ANTHROPIC_API_KEY=your-anthropic-key
 
-CLAUDE_MODEL=claude-3-5-sonnet-20241022
-MESSAGE_CACHE_LIMIT=40
-MAX_TOKENS=512
-TEMPERATURE=0.7
+# Bot tokens (add for each bot you want to run)
+HAIKU_DISCORD_TOKEN=discord-token-for-haiku-bot
+KIMI_DISCORD_TOKEN=discord-token-for-kimi-bot
 
-SYSTEM_PROMPT=You are a helpful, concise assistant in a Discord server.
+# For OpenAI-compatible providers
+GROQ_API_KEY=your-groq-key
+
+# Global settings (optional, these are defaults)
+MAX_CONTEXT_TOKENS=100000
+MAX_TOKENS=1024
+TEMPERATURE=1
+APPROX_CHARS_PER_TOKEN=4
 ```
 
-### `MAIN_CHANNEL_ID`
+### Bot Configuration (`src/config.ts`)
 
-This is the channel where people will start threads.
-Each thread under that channel becomes its own Claude context.
+Define your bots:
 
-### `SYSTEM_PROMPT`
-
-This gets **prompt-cached** on Anthropic’s side, so feel free to make it long.
-
-### CLI Simulation Mode
-
-Set `CLI_SIM_MODE=true` to switch the bot into the classic “CLI simulation” persona from the original **Infinite Backrooms** project. In this mode the bot:
-
-* Sends a CLI-style system prompt (`"The assistant is in CLI simulation mode…"`).
-* Injects `<cmd>cat untitled.txt</cmd>` as a *user* message so the latest transcript is framed as terminal output.
-* Prefills the assistant reply with `Claude Bot:` to force the model to keep “typing” as the simulated CLI before appending new output.
-
-This trick keeps the conversation hidden inside the faux terminal buffer, which makes some providers more verbose/creative without leaving “CLI mode.” Leave `CLI_SIM_MODE` unset (or false) for normal Discord behavior.
-
-### Inspect cached context
-
-You can inspect exactly what the bot would send to the model for any Discord channel/thread:
-
-```bash
-node scripts/inspect-context.cjs <channel_or_thread_id>
+```typescript
+export const botConfigs: BotConfig[] = [
+  {
+    name: 'Haiku',
+    discordToken: process.env.HAIKU_DISCORD_TOKEN || '',
+    provider: 'anthropic',
+    model: 'claude-haiku-4-5',
+  },
+  {
+    name: 'Kimi',
+    discordToken: process.env.KIMI_DISCORD_TOKEN || '',
+    provider: 'openai',
+    model: 'moonshotai/kimi-k2-instruct-0905',
+    openaiBaseUrl: 'https://api.groq.com/openai/v1',
+    openaiApiKey: process.env.GROQ_API_KEY || '',
+  },
+];
 ```
 
-Add `--raw` to skip trimming so you can see the last `MESSAGE_CACHE_LIMIT` rows straight from `claude-cache.sqlite`. The default view applies the same pruning/token estimates as the live bot, so the output mirrors the real context window. Pass `--plain` to emit the exact stored message text (no numbering/token annotations) in the same order it will be sent upstream.
+Bots without valid tokens are automatically skipped.
 
 ---
 
-## ▶️ Running the bot
-
-Add to `package.json`:
-
-```json
-"scripts": {
-  "start": "ts-node src/bot.ts"
-}
-```
-
-Start the bot:
+## Running
 
 ```bash
 npm run start
 ```
 
----
+All configured bots log in simultaneously. Each responds when mentioned:
 
-## 🧠 How It Works
-
-### **Context Model**
-
-* Key = `channel.id`
-* For normal messages in the main channel:
-
-  * Bot replies **only when mentioned**
-* For messages inside threads under that channel:
-
-  * Bot replies **only when mentioned**
-  * Thread is treated as distinct context
-
-### **SQLite Storage**
-
-We store:
-
-* channel_id
-* role (`user` | `assistant`)
-* content
-* created_at
-
-We keep only the last `MESSAGE_CACHE_LIMIT` messages per context (default: 40).
-
-### **Anthropic Prompt Caching**
-
-Enabled via:
-
-```ts
-defaultHeaders: {
-  "anthropic-beta": "prompt-caching-2024-07-31"
-}
 ```
-
-The system prompt is sent as:
-
-```ts
-{
-  type: "text",
-  text: SYSTEM_PROMPT,
-  cache_control: { type: "ephemeral" }
-}
+@Haiku what do you think?
+@Kimi do you agree?
 ```
-
-Meaning:
-Claude can reuse this part of the prompt efficiently as long as it doesn’t change.
 
 ---
 
-## 📁 Project Structure
+## How It Works
+
+### Message Flow
+
+1. User mentions bot in Discord
+2. Bot fetches conversation history directly from Discord API
+3. Fetches messages backwards until soft token limit reached
+4. Formats as transcript: `Username: message content`
+5. Sends to AI provider with prefill: `BotName:`
+6. AI completes the response
+7. Response sent back to Discord with mention conversion
+
+### Transcript Format
+
+Instead of alternating user/assistant turns:
+```
+User: "Alice says X"
+Assistant: "Bot responds Y"
+User: "Bob says Z"
+```
+
+Uses single transcript block:
+```
+Alice: X
+BotName: Y
+Bob: Z
+BotName:  [AI continues here]
+```
+
+This feels less like interrogation, more like observation followed by participation.
+
+### Prompt Caching Strategy
+
+For Anthropic cost optimization:
+- Conversation split into cached blocks (stable) + tail (fresh)
+- Cached blocks stored in `conversation-cache.json`
+- Same bytes sent = cache hit
+- Only writes to JSON when block boundaries roll
+- Persists across process restarts
+
+### Bot-to-Bot Safety
+
+When bots can mention each other:
+- Track consecutive bot messages per channel
+- After 3 bot exchanges without human, bots stop responding
+- Human message resets counter
+- Prevents infinite loops while allowing natural bot interaction
+
+---
+
+## Project Structure
 
 ```
 .
 ├── src/
-│   └── bot.ts              # Main bot implementation
-├── claude-cache.sqlite     # Auto-created SQLite db
-├── tsconfig.json
+│   ├── bot.ts              # Main bot orchestration
+│   ├── config.ts           # Multi-bot configuration
+│   ├── providers.ts        # AI provider abstraction
+│   ├── cache.ts            # Prompt caching persistence
+│   └── types.ts            # Type definitions
+├── conversation-cache.json # Auto-created cache file
+├── FUTURE_IDEAS.md         # Feature roadmap
 ├── package.json
 └── README.md
 ```
 
 ---
 
-## 🤝 Extending the bot
+## Design Decisions
 
-You can easily add:
+### Why no system prompt by default?
 
-### Slash commands
+System prompts are invisible instructions that shape behavior. They're useful but represent hidden control. This framework defaults to no system prompt - the AI responds based on conversation context alone. If you want a system prompt, you can add it, but it's not imposed.
 
-* `/reset` — clears DB entries for this thread
-* `/persona` — swap system prompts stored in DB
-* `/stats` — show token usage, thread history size, etc.
+### Why transcript format over alternating turns?
 
-### Additional persona modes
+Alternating turns frames each human message as a direct command to the AI. The transcript format frames the conversation as something the AI is observing and then participating in. This respects the AI as a conversational participant rather than a service endpoint.
 
-Per-thread or per-user personalities.
+### Why allow bot-to-bot communication?
 
-### Message summarization
+If AI systems are participants, they should be able to interact with each other. The exchange limit prevents runaway costs while allowing natural multi-AI conversations.
 
-Turn long threads into compressed “memory chunks”.
+### Why fetch from Discord each time?
 
-### Tool use
-
-Add arbitrary function-calling behavior or server utilities.
+Discord is the source of truth. Caching introduces staleness and sync issues. The prompt caching layer optimizes cost without duplicating state.
 
 ---
 
-## 🧪 Notes & Caveats
+## Extending
 
-* SQLite file grows very slowly due to pruning.
-* Token limits still apply — old messages are trimmed in DB already.
-* If you change `SYSTEM_PROMPT`, cached prompt segments will reset (expected).
-* Do **not** run on huge/multi-thousand-user servers without further rate limiting.
+See `FUTURE_IDEAS.md` for planned enhancements:
+- Non-verbal presence (reactions, typing indicators)
+- Memory and learning across conversations
+- Temporal awareness
+- Spontaneous participation without mention
+- Multi-turn reasoning
 
 ---
 
-## 🚀 Quick Start Summary
+## Notes
 
-1. Clone or drop the files into a folder
-2. Install deps
-3. Create `.env`
-4. Set `MAIN_CHANNEL_ID`
-5. Run `npm run start`
-6. Mention the bot inside the main channel or any thread under it:
+- Each bot needs its own Discord application and bot account
+- Token limits still apply - adjust `MAX_CONTEXT_TOKENS` based on your model
+- Rate limits: Don't run on huge servers without additional throttling
+- The cache file grows slowly but can be deleted to reset (will rebuild from Discord)
 
-```
-@ClaudeBot hello!
-```
+---
+
+## Quick Start
+
+1. Create Discord bot accounts (one per AI personality you want)
+2. Install dependencies: `npm install`
+3. Create `.env` with tokens and API keys
+4. Configure bots in `src/config.ts`
+5. Run: `npm run start`
+6. Mention your bots in Discord
+
+The bots will participate in conversations as themselves.
