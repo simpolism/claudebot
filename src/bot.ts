@@ -11,88 +11,23 @@ import {
   PrivateThreadChannel,
   PublicThreadChannel,
 } from 'discord.js';
-import { createAIProvider } from './providers';
+import { createAIProvider, AIProvider } from './providers';
 import { ImageBlock, SimpleMessage } from './types';
+import {
+  activeBotConfigs,
+  globalConfig,
+  resolveConfig,
+  BotConfig,
+} from './config';
 
-// ---------- Config ----------
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const MAIN_CHANNEL_ID = process.env.MAIN_CHANNEL_ID; // text channel id
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-4-5';
-const MAX_CONTEXT_TOKENS = parseInt(
-  process.env.MAX_CONTEXT_TOKENS || '100000',
-  10,
-);
-const APPROX_CHARS_PER_TOKEN = parseFloat(
-  process.env.APPROX_CHARS_PER_TOKEN || '4',
-);
-const DISCORD_MESSAGE_LIMIT = 2000;
-const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '1024', 10);
-const TEMPERATURE = parseFloat(process.env.TEMPERATURE || '1');
-const CLI_SIM_MODE = parseBooleanFlag(process.env.CLI_SIM_MODE);
-const DEFAULT_SYSTEM_PROMPT =
-  "The assistant is in CLI simulation mode, and responds to the user's CLI commands only with the output of the command.";
-const SYSTEM_PROMPT = CLI_SIM_MODE ? DEFAULT_SYSTEM_PROMPT : '';
-const PREFILL_COMMAND = CLI_SIM_MODE ? '<cmd>cat untitled.txt</cmd>' : '';
-const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
-const OPENAI_MODEL =
-  process.env.OPENAI_MODEL || 'moonshotai/kimi-k2-instruct-0905';
-const OPENAI_BASE_URL =
-  process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-
-const STARTUP_CONFIG = {
-  mainChannelId: MAIN_CHANNEL_ID || '(unset)',
-  aiProvider: AI_PROVIDER,
-  claudeModel: CLAUDE_MODEL,
-  openaiModel: OPENAI_MODEL,
-  openaiBaseURL: OPENAI_BASE_URL,
-  maxContextTokens: MAX_CONTEXT_TOKENS,
-  maxTokens: MAX_TOKENS,
-  temperature: TEMPERATURE,
-  cliSimulationMode: CLI_SIM_MODE,
-  systemPrompt: `"${SYSTEM_PROMPT}"`,
-  prefillCommand: `"${PREFILL_COMMAND}"`,
-};
-
-console.log('Starting bot with configuration:', STARTUP_CONFIG);
-
-function parseBooleanFlag(value: string | undefined): boolean {
-  if (!value) return false;
-  switch (value.trim().toLowerCase()) {
-    case '1':
-    case 'true':
-    case 'yes':
-    case 'on':
-      return true;
-    default:
-      return false;
-  }
+// ---------- Types ----------
+interface BotInstance {
+  config: BotConfig;
+  client: Client;
+  aiProvider: AIProvider;
 }
 
-// ---------- Discord client ----------
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-  partials: [Partials.Channel, Partials.Message],
-});
-
-const aiProvider = createAIProvider({
-  provider: AI_PROVIDER,
-  systemPrompt: SYSTEM_PROMPT,
-  prefillCommand: PREFILL_COMMAND,
-  temperature: TEMPERATURE,
-  maxTokens: MAX_TOKENS,
-  maxContextTokens: MAX_CONTEXT_TOKENS,
-  approxCharsPerToken: APPROX_CHARS_PER_TOKEN,
-  anthropicModel: CLAUDE_MODEL,
-  openaiModel: OPENAI_MODEL,
-  openaiBaseURL: OPENAI_BASE_URL,
-  openaiApiKey: OPENAI_API_KEY,
-});
-
+// ---------- Utility Functions ----------
 type TextThreadChannel = PublicThreadChannel | PrivateThreadChannel;
 
 function isThreadChannel(
@@ -105,24 +40,21 @@ function isThreadChannel(
   );
 }
 
-// In-scope = main channel OR threads under that channel
 function isInScope(message: Message): boolean {
   const channel = message.channel;
 
-  if (!MAIN_CHANNEL_ID) {
-    // if not set, respond anywhere (probably not what you want in production)
+  if (!globalConfig.mainChannelId) {
     return true;
   }
 
   if (isThreadChannel(channel)) {
-    return channel.parentId === MAIN_CHANNEL_ID;
+    return channel.parentId === globalConfig.mainChannelId;
   }
 
-  return channel.id === MAIN_CHANNEL_ID;
+  return channel.id === globalConfig.mainChannelId;
 }
 
-// We now *only* respond when explicitly mentioned, even in threads
-function shouldRespond(message: Message): boolean {
+function shouldRespond(message: Message, client: Client): boolean {
   if (!isInScope(message)) return false;
   if (message.author.bot) return false;
   if (!client.user) return false;
@@ -131,156 +63,56 @@ function shouldRespond(message: Message): boolean {
 }
 
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / Math.max(APPROX_CHARS_PER_TOKEN, 1));
-}
-
-// Fetch messages from a channel until we hit a token budget
-async function fetchMessagesWithTokenBudget(
-  channel: Message['channel'],
-  tokenBudget: number,
-): Promise<{ messages: SimpleMessage[]; tokensUsed: number }> {
-  if (!channel.isTextBased()) {
-    return { messages: [], tokensUsed: 0 };
-  }
-
-  const messages: SimpleMessage[] = [];
-  let totalTokens = 0;
-  let lastId: string | undefined;
-
-  while (totalTokens < tokenBudget) {
-    const fetched: Collection<string, Message> = await channel.messages.fetch({
-      limit: 100,
-      before: lastId,
-    });
-
-    if (fetched.size === 0) {
-      break;
-    }
-
-    for (const msg of fetched.values()) {
-      const isAssistant =
-        Boolean(client.user) && msg.author.id === client.user?.id;
-      const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
-      const attachmentSummary = buildAttachmentSummary(msg.attachments);
-      const messageContent = replaceUserMentions(
-        msg.content || '(empty message)',
-        msg,
-      );
-      const storedContent = attachmentSummary
-        ? `${messageContent}\n${attachmentSummary}`
-        : messageContent;
-      const authorName = isAssistant
-        ? getBotCanonicalName()
-        : getUserCanonicalName(msg);
-
-      const formattedContent = formatAuthoredContent(authorName, storedContent);
-      const messageTokens = estimateTokens(formattedContent) + 4;
-
-      if (totalTokens + messageTokens > tokenBudget) {
-        break;
-      }
-
-      messages.push({
-        role,
-        content: formattedContent,
-      });
-      totalTokens += messageTokens;
-    }
-
-    if (totalTokens >= tokenBudget) {
-      break;
-    }
-
-    lastId = fetched.last()?.id;
-  }
-
-  messages.reverse();
-  return { messages, tokensUsed: totalTokens };
-}
-
-// Fetch messages from Discord until we hit the soft token limit
-// For threads, includes parent channel context
-async function fetchConversationFromDiscord(
-  channel: Message['channel'],
-): Promise<SimpleMessage[]> {
-  if (!channel.isTextBased()) {
-    return [];
-  }
-
-  let parentContext: SimpleMessage[] = [];
-  let parentTokens = 0;
-
-  // If this is a thread, fetch some parent channel context first
-  if (isThreadChannel(channel) && channel.parent?.isTextBased()) {
-    // Reserve up to 20% of token budget for parent context
-    const parentBudget = Math.floor(MAX_CONTEXT_TOKENS * 0.2);
-    const parentResult = await fetchMessagesWithTokenBudget(
-      channel.parent,
-      parentBudget,
-    );
-    parentContext = parentResult.messages;
-    parentTokens = parentResult.tokensUsed;
-
-    if (parentContext.length > 0) {
-      // Add a separator to indicate transition to thread
-      const separatorContent = '--- Thread started ---';
-      const separatorTokens = estimateTokens(separatorContent) + 4;
-      parentContext.push({
-        role: 'user',
-        content: separatorContent,
-      });
-      parentTokens += separatorTokens;
-
-      console.log(
-        `Fetched ${parentContext.length - 1} parent channel messages (~${parentTokens} tokens)`,
-      );
-    }
-  }
-
-  // Fetch thread/channel messages with remaining budget
-  const remainingBudget = MAX_CONTEXT_TOKENS - parentTokens;
-  const { messages: channelMessages, tokensUsed: channelTokens } =
-    await fetchMessagesWithTokenBudget(channel, remainingBudget);
-
-  const totalMessages = [...parentContext, ...channelMessages];
-  const totalTokens = parentTokens + channelTokens;
-
-  console.log(
-    `Total conversation: ${totalMessages.length} messages (~${totalTokens} tokens)`,
+  return Math.ceil(
+    text.length / Math.max(globalConfig.approxCharsPerToken, 1),
   );
-
-  return totalMessages;
 }
 
-function chunkReplyText(text: string): string[] {
-  if (text.length <= DISCORD_MESSAGE_LIMIT) {
-    return [text];
-  }
+function getUserCanonicalName(message: Message): string {
+  return (
+    message.author.username ??
+    message.author.globalName ??
+    message.author.tag
+  );
+}
 
-  const chunks: string[] = [];
-  let remaining = text;
+function getBotCanonicalName(client: Client): string {
+  return (
+    client.user?.username ??
+    client.user?.globalName ??
+    client.user?.tag ??
+    'Bot'
+  );
+}
 
-  while (remaining.length > 0) {
-    if (remaining.length <= DISCORD_MESSAGE_LIMIT) {
-      chunks.push(remaining);
-      break;
+function formatAuthoredContent(authorName: string, content: string): string {
+  const normalized = content.trim();
+  const finalContent = normalized.length ? normalized : '(empty message)';
+  return `${authorName}: ${finalContent}`;
+}
+
+const USER_MENTION_REGEX = /<@!?(\d+)>/g;
+
+function formatMentionName(user: Message['author']): string {
+  return user.username ?? user.globalName ?? user.tag;
+}
+
+function replaceUserMentions(
+  content: string,
+  message: Message,
+  client: Client,
+): string {
+  if (!content) return content;
+  return content.replace(USER_MENTION_REGEX, (match, userId) => {
+    const mentionedUser =
+      message.mentions.users.get(userId) ??
+      client.users.cache.get(userId) ??
+      null;
+    if (!mentionedUser) {
+      return match;
     }
-
-    let sliceEnd = DISCORD_MESSAGE_LIMIT;
-    const newlineIndex = remaining.lastIndexOf('\n', sliceEnd);
-    const spaceIndex = remaining.lastIndexOf(' ', sliceEnd);
-    const breakIndex = Math.max(newlineIndex, spaceIndex);
-
-    if (breakIndex > sliceEnd * 0.5) {
-      sliceEnd = breakIndex;
-    }
-
-    const chunk = remaining.slice(0, sliceEnd).trimEnd();
-    chunks.push(chunk);
-    remaining = remaining.slice(sliceEnd).trimStart();
-  }
-
-  return chunks;
+    return `@${formatMentionName(mentionedUser)}`;
+  });
 }
 
 function isImageAttachment(attachment: Attachment): boolean {
@@ -332,60 +164,164 @@ function getImageBlocksFromAttachments(
   return blocks;
 }
 
-function getUserCanonicalName(message: Message): string {
-  return (
-    message.author.username ??
-    message.author.globalName ??
-    message.author.tag
-  );
-}
+// ---------- Discord Message Fetching ----------
+async function fetchMessagesWithTokenBudget(
+  channel: Message['channel'],
+  tokenBudget: number,
+  client: Client,
+): Promise<{ messages: SimpleMessage[]; tokensUsed: number }> {
+  if (!channel.isTextBased()) {
+    return { messages: [], tokensUsed: 0 };
+  }
 
-function getBotCanonicalName(): string {
-  return (
-    client.user?.username ??
-    client.user?.globalName ??
-    client.user?.tag ??
-    'Claude Bot'
-  );
-}
+  const messages: SimpleMessage[] = [];
+  let totalTokens = 0;
+  let lastId: string | undefined;
 
-function formatAuthoredContent(authorName: string, content: string): string {
-  const normalized = content.trim();
-  const finalContent = normalized.length ? normalized : '(empty message)';
-  return `${authorName}: ${finalContent}`;
-}
+  while (totalTokens < tokenBudget) {
+    const fetched: Collection<string, Message> = await channel.messages.fetch({
+      limit: 100,
+      before: lastId,
+    });
 
-const USER_MENTION_REGEX = /<@!?(\d+)>/g;
-
-function formatMentionName(user: Message['author']): string {
-  return user.username ?? user.globalName ?? user.tag;
-}
-
-function replaceUserMentions(content: string, message: Message): string {
-  if (!content) return content;
-  return content.replace(USER_MENTION_REGEX, (match, userId) => {
-    const mentionedUser =
-      message.mentions.users.get(userId) ??
-      client.users.cache.get(userId) ??
-      null;
-    if (!mentionedUser) {
-      return match;
+    if (fetched.size === 0) {
+      break;
     }
-    return `@${formatMentionName(mentionedUser)}`;
-  });
+
+    for (const msg of fetched.values()) {
+      const isAssistant =
+        Boolean(client.user) && msg.author.id === client.user?.id;
+      const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
+      const attachmentSummary = buildAttachmentSummary(msg.attachments);
+      const messageContent = replaceUserMentions(
+        msg.content || '(empty message)',
+        msg,
+        client,
+      );
+      const storedContent = attachmentSummary
+        ? `${messageContent}\n${attachmentSummary}`
+        : messageContent;
+      const authorName = isAssistant
+        ? getBotCanonicalName(client)
+        : getUserCanonicalName(msg);
+
+      const formattedContent = formatAuthoredContent(authorName, storedContent);
+      const messageTokens = estimateTokens(formattedContent) + 4;
+
+      if (totalTokens + messageTokens > tokenBudget) {
+        break;
+      }
+
+      messages.push({
+        role,
+        content: formattedContent,
+      });
+      totalTokens += messageTokens;
+    }
+
+    if (totalTokens >= tokenBudget) {
+      break;
+    }
+
+    lastId = fetched.last()?.id;
+  }
+
+  messages.reverse();
+  return { messages, tokensUsed: totalTokens };
 }
 
-// Convert @Username in bot output back to Discord mention format
+async function fetchConversationFromDiscord(
+  channel: Message['channel'],
+  maxContextTokens: number,
+  client: Client,
+): Promise<SimpleMessage[]> {
+  if (!channel.isTextBased()) {
+    return [];
+  }
+
+  let parentContext: SimpleMessage[] = [];
+  let parentTokens = 0;
+
+  if (isThreadChannel(channel) && channel.parent?.isTextBased()) {
+    const parentBudget = Math.floor(maxContextTokens * 0.2);
+    const parentResult = await fetchMessagesWithTokenBudget(
+      channel.parent,
+      parentBudget,
+      client,
+    );
+    parentContext = parentResult.messages;
+    parentTokens = parentResult.tokensUsed;
+
+    if (parentContext.length > 0) {
+      const separatorContent = '--- Thread started ---';
+      const separatorTokens = estimateTokens(separatorContent) + 4;
+      parentContext.push({
+        role: 'user',
+        content: separatorContent,
+      });
+      parentTokens += separatorTokens;
+
+      console.log(
+        `[${getBotCanonicalName(client)}] Fetched ${parentContext.length - 1} parent channel messages (~${parentTokens} tokens)`,
+      );
+    }
+  }
+
+  const remainingBudget = maxContextTokens - parentTokens;
+  const { messages: channelMessages, tokensUsed: channelTokens } =
+    await fetchMessagesWithTokenBudget(channel, remainingBudget, client);
+
+  const totalMessages = [...parentContext, ...channelMessages];
+  const totalTokens = parentTokens + channelTokens;
+
+  console.log(
+    `[${getBotCanonicalName(client)}] Total conversation: ${totalMessages.length} messages (~${totalTokens} tokens)`,
+  );
+
+  return totalMessages;
+}
+
+// ---------- Response Formatting ----------
+function chunkReplyText(text: string): string[] {
+  if (text.length <= globalConfig.discordMessageLimit) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= globalConfig.discordMessageLimit) {
+      chunks.push(remaining);
+      break;
+    }
+
+    let sliceEnd = globalConfig.discordMessageLimit;
+    const newlineIndex = remaining.lastIndexOf('\n', sliceEnd);
+    const spaceIndex = remaining.lastIndexOf(' ', sliceEnd);
+    const breakIndex = Math.max(newlineIndex, spaceIndex);
+
+    if (breakIndex > sliceEnd * 0.5) {
+      sliceEnd = breakIndex;
+    }
+
+    const chunk = remaining.slice(0, sliceEnd).trimEnd();
+    chunks.push(chunk);
+    remaining = remaining.slice(sliceEnd).trimStart();
+  }
+
+  return chunks;
+}
+
 function convertOutputMentions(
   text: string,
   channel: Message['channel'],
+  client: Client,
 ): string {
   if (!channel.isTextBased()) return text;
 
-  // Build a map of usernames to user IDs
   const usernameToId = new Map<string, string>();
 
-  // Add all users the client knows about
   client.users.cache.forEach((user) => {
     usernameToId.set(user.username.toLowerCase(), user.id);
     if (user.globalName) {
@@ -393,7 +329,6 @@ function convertOutputMentions(
     }
   });
 
-  // Also check guild members if available (for nicknames)
   if ('guild' in channel && channel.guild) {
     channel.guild.members.cache.forEach((member) => {
       usernameToId.set(member.user.username.toLowerCase(), member.user.id);
@@ -406,13 +341,13 @@ function convertOutputMentions(
     });
   }
 
-  // Replace @Username patterns with <@id>
   return text.replace(/@(\w+)/g, (match, name) => {
     const id = usernameToId.get(name.toLowerCase());
     return id ? `<@${id}>` : match;
   });
 }
 
+// ---------- Typing Indicator ----------
 type TypingCapableChannel = Message['channel'] & {
   sendTyping: () => Promise<void>;
 };
@@ -475,80 +410,164 @@ function hasSend(channel: Message['channel']): channel is SendCapableChannel {
   );
 }
 
-// ---------- Events ----------
-client.once(Events.ClientReady, async (c) => {
-  console.log(`Logged in as ${c.user.tag}`);
-});
+// ---------- Bot Instance Setup ----------
+function createBotInstance(botConfig: BotConfig): BotInstance {
+  const resolved = resolveConfig(botConfig);
 
-client.on(Events.MessageCreate, async (message) => {
-  let stopTyping: (() => void) | null = null;
-  try {
-    if (!shouldRespond(message)) return;
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+    partials: [Partials.Channel, Partials.Message],
+  });
 
-    const channelId = message.channel.id;
-    const botDisplayName = getBotCanonicalName();
+  const systemPrompt = resolved.cliSimMode
+    ? "The assistant is in CLI simulation mode, and responds to the user's CLI commands only with the output of the command."
+    : '';
 
-    // Fetch conversation history from Discord
-    const conversation = await fetchConversationFromDiscord(message.channel);
+  const prefillCommand = resolved.cliSimMode
+    ? '<cmd>cat untitled.txt</cmd>'
+    : '';
 
-    // Call AI provider
-    stopTyping = startTypingIndicator(message.channel);
-    const imageBlocks = getImageBlocksFromAttachments(message.attachments);
-    const claudeReply = await aiProvider.send({
-      conversation,
-      botDisplayName,
-      imageBlocks,
-    });
-    const replyText = claudeReply.text;
-    stopTyping();
-    stopTyping = null;
+  const aiProvider = createAIProvider({
+    provider: resolved.provider,
+    systemPrompt,
+    prefillCommand,
+    temperature: resolved.temperature,
+    maxTokens: resolved.maxTokens,
+    maxContextTokens: resolved.maxContextTokens,
+    approxCharsPerToken: globalConfig.approxCharsPerToken,
+    anthropicModel: resolved.model,
+    openaiModel: resolved.model,
+    openaiBaseURL: resolved.openaiBaseUrl || 'https://api.openai.com/v1',
+    openaiApiKey: resolved.openaiApiKey || '',
+  });
 
-    // Convert @Username mentions in output to Discord format
-    const formattedReplyText = convertOutputMentions(
-      replyText,
-      message.channel,
-    );
-
-    // Send reply (chunked to satisfy Discord's message length limit)
-    const replyChunks = chunkReplyText(formattedReplyText);
-    let lastSent: Message | null = null;
-    if (replyChunks.length > 0) {
-      const [firstChunk, ...restChunks] = replyChunks;
-      lastSent = await message.reply(firstChunk);
-
-      for (const chunk of restChunks) {
-        if (hasSend(message.channel)) {
-          lastSent = await message.channel.send(chunk);
-        } else {
-          lastSent = await message.reply(chunk);
-        }
-      }
-    }
-
-    console.log(
-      `Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${
-        replyChunks.length === 1 ? '' : 's'
-      })`,
-    );
-  } catch (err) {
-    console.error('Error handling message:', err);
-    try {
-      await message.reply('Sorry, I hit an error. Check the bot logs.');
-    } catch {
-      // ignore
-    }
-  } finally {
-    stopTyping?.();
-  }
-});
-
-// ---------- Start ----------
-if (!DISCORD_TOKEN) {
-  console.error('Missing DISCORD_TOKEN in .env');
-  process.exit(1);
+  return { config: botConfig, client, aiProvider };
 }
 
-client.login(DISCORD_TOKEN).catch((err) => {
-  console.error('Failed to login to Discord:', err);
+function setupBotEvents(instance: BotInstance): void {
+  const { config, client, aiProvider } = instance;
+  const resolved = resolveConfig(config);
+
+  client.once(Events.ClientReady, (c) => {
+    console.log(`[${config.name}] Logged in as ${c.user.tag}`);
+  });
+
+  client.on(Events.MessageCreate, async (message) => {
+    let stopTyping: (() => void) | null = null;
+    try {
+      if (!shouldRespond(message, client)) return;
+
+      const channelId = message.channel.id;
+      const botDisplayName = getBotCanonicalName(client);
+
+      const conversation = await fetchConversationFromDiscord(
+        message.channel,
+        resolved.maxContextTokens,
+        client,
+      );
+
+      stopTyping = startTypingIndicator(message.channel);
+      const imageBlocks = getImageBlocksFromAttachments(message.attachments);
+      const aiReply = await aiProvider.send({
+        conversation,
+        botDisplayName,
+        imageBlocks,
+      });
+      const replyText = aiReply.text;
+      stopTyping();
+      stopTyping = null;
+
+      const formattedReplyText = convertOutputMentions(
+        replyText,
+        message.channel,
+        client,
+      );
+
+      const replyChunks = chunkReplyText(formattedReplyText);
+      let lastSent: Message | null = null;
+      if (replyChunks.length > 0) {
+        const [firstChunk, ...restChunks] = replyChunks;
+        lastSent = await message.reply(firstChunk);
+
+        for (const chunk of restChunks) {
+          if (hasSend(message.channel)) {
+            lastSent = await message.channel.send(chunk);
+          } else {
+            lastSent = await message.reply(chunk);
+          }
+        }
+      }
+
+      console.log(
+        `[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${
+          replyChunks.length === 1 ? '' : 's'
+        })`,
+      );
+    } catch (err) {
+      console.error(`[${config.name}] Error handling message:`, err);
+      try {
+        await message.reply('Sorry, I hit an error. Check the bot logs.');
+      } catch {
+        // ignore
+      }
+    } finally {
+      stopTyping?.();
+    }
+  });
+}
+
+// ---------- Main ----------
+async function main(): Promise<void> {
+  console.log('Starting multi-bot system with configuration:', {
+    mainChannelId: globalConfig.mainChannelId || '(unset)',
+    maxContextTokens: globalConfig.maxContextTokens,
+    maxTokens: globalConfig.maxTokens,
+    temperature: globalConfig.temperature,
+    bots: activeBotConfigs.map((c) => ({
+      name: c.name,
+      provider: c.provider,
+      model: c.model,
+    })),
+  });
+
+  if (activeBotConfigs.length === 0) {
+    console.error('No bots configured with valid tokens. Exiting.');
+    process.exit(1);
+  }
+
+  const instances: BotInstance[] = [];
+
+  for (const config of activeBotConfigs) {
+    const instance = createBotInstance(config);
+    setupBotEvents(instance);
+    instances.push(instance);
+  }
+
+  // Login all bots
+  const loginPromises = instances.map(async (instance) => {
+    try {
+      await instance.client.login(instance.config.discordToken);
+      console.log(`[${instance.config.name}] Login successful`);
+    } catch (err) {
+      console.error(`[${instance.config.name}] Failed to login:`, err);
+      throw err;
+    }
+  });
+
+  try {
+    await Promise.all(loginPromises);
+    console.log('All bots logged in successfully');
+  } catch (err) {
+    console.error('One or more bots failed to login. Exiting.');
+    process.exit(1);
+  }
+}
+
+main().catch((err) => {
+  console.error('Fatal error:', err);
   process.exit(1);
 });
