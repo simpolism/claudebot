@@ -70,7 +70,8 @@ npm install
 
 ```ini
 # Required
-MAIN_CHANNEL_ID=123456789012345678
+# Comma-separated list of root channel IDs bots can respond in
+MAIN_CHANNEL_IDS=123456789012345678,234567890123456789
 ANTHROPIC_API_KEY=your-anthropic-key
 
 # Bot tokens (add for each bot you want to run)
@@ -86,6 +87,8 @@ MAX_TOKENS=1024
 TEMPERATURE=1
 APPROX_CHARS_PER_TOKEN=4
 ```
+
+`MAIN_CHANNEL_IDS` accepts a comma-separated list of channel IDs. Leave it unset to let bots respond anywhere.
 
 ### Bot Configuration (`src/config.ts`)
 
@@ -127,6 +130,14 @@ All configured bots log in simultaneously. Each responds when mentioned:
 @Kimi do you agree?
 ```
 
+Bots are linted/formatted/tested via:
+
+```bash
+npm run lint
+npm run format
+npm run test
+```
+
 ---
 
 ## How It Works
@@ -134,12 +145,11 @@ All configured bots log in simultaneously. Each responds when mentioned:
 ### Message Flow
 
 1. User mentions bot in Discord
-2. Bot fetches conversation history directly from Discord API
-3. Fetches messages backwards until soft token limit reached
-4. Formats as transcript: `Username: message content`
-5. Sends to AI provider with prefill: `BotName:`
-6. AI completes the response
-7. Response sent back to Discord with mention conversion
+2. `context.ts` gathers context: it reuses byte-perfect cached blocks, then fetches fresh Discord messages (guaranteed tail) even if the cache already fills the soft budget
+3. Formats everything into a single transcript block (`Name: message` lines) plus any image references
+4. Sends the transcript to the configured AI provider with prefill `BotName:` and provider-specific options (Anthropic caching hints, OpenAI chat payloads, etc.)
+5. Provider streams the completion
+6. Bot converts `@Name` back into Discord mentions, splits oversized replies, and posts them to the channel/thread
 
 ### Transcript Format
 
@@ -185,15 +195,19 @@ When bots can mention each other:
 ```
 .
 ├── src/
-│   ├── bot.ts              # Main bot orchestration
-│   ├── config.ts           # Multi-bot configuration
+│   ├── bot.ts              # Discord wiring + runtime orchestration
+│   ├── context.ts          # Conversation fetching, caching, and tail assembly
+│   ├── config.ts           # Multi-bot configuration + env parsing
+│   ├── discord-utils.ts    # Discord-specific formatting helpers
 │   ├── providers.ts        # AI provider abstraction
 │   ├── cache.ts            # Prompt caching persistence
-│   └── types.ts            # Type definitions
+│   └── types.ts            # Shared types
 ├── conversation-cache.json # Auto-created cache file
 ├── FUTURE_IDEAS.md         # Feature roadmap
 ├── package.json
-└── README.md
+├── README.md
+├── tests/                  # Vitest specs documenting key module behavior
+└── vitest.config.ts
 ```
 
 ---

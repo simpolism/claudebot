@@ -4,8 +4,16 @@ exports.activeBotConfigs = exports.botConfigs = exports.globalConfig = void 0;
 exports.resolveConfig = resolveConfig;
 require("dotenv/config");
 // Global configuration shared across all bots
+function parseMainChannelIds() {
+    const raw = process.env.MAIN_CHANNEL_IDS || '';
+    return raw
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0);
+}
+const mainChannelIds = parseMainChannelIds();
 exports.globalConfig = {
-    mainChannelId: process.env.MAIN_CHANNEL_ID || '',
+    mainChannelIds,
     maxContextTokens: parseInt(process.env.MAX_CONTEXT_TOKENS || '100000', 10),
     maxTokens: parseInt(process.env.MAX_TOKENS || '4096', 10),
     temperature: parseFloat(process.env.TEMPERATURE || '1'),

@@ -4,7 +4,10 @@
   "main": "index.js",
   "scripts": {
     "start": "ts-node src/bot.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format": "prettier --write \"{src,tests}/**/*.ts\"",
+    "test": "vitest run"
   },
   "keywords": [],
   "author": "",
@@ -18,7 +21,13 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^2.0.5"
   }
 }
