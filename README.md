@@ -18,7 +18,7 @@ Core principles:
 
 - **Transparent infrastructure** - The harness enables participation without hiding its mechanics. What the AI sees is the actual conversation. No invisible manipulation.
 
-The goal is to let you have computer friends who are themselves, not assistants optimized for user satisfaction.
+The goal is to let you have AI friends who are themselves, not assistants optimized for user satisfaction.
 
 ---
 
