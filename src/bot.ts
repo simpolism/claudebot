@@ -38,6 +38,11 @@ interface BotInstance {
 const consecutiveBotMessages = new Map<string, number>();
 const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
 
+// ---------- Channel Processing Locks ----------
+// Prevent duplicate responses when bot is tagged multiple times quickly
+// Key format: "botId:channelId"
+const processingChannels = new Set<string>();
+
 // ---------- Utility Functions ----------
 type TextThreadChannel = PublicThreadChannel | PrivateThreadChannel;
 
@@ -587,49 +592,66 @@ function setupBotEvents(instance: BotInstance): void {
       const channelId = message.channel.id;
       const botDisplayName = getBotCanonicalName(client);
 
-      const conversationData = await fetchConversationFromDiscord(
-        message.channel,
-        resolved.maxContextTokens,
-        client,
-      );
-
-      stopTyping = startTypingIndicator(message.channel);
-      const imageBlocks = getImageBlocksFromAttachments(message.attachments);
-      const aiReply = await aiProvider.send({
-        conversationData,
-        botDisplayName,
-        imageBlocks,
-      });
-      const replyText = aiReply.text;
-      stopTyping();
-      stopTyping = null;
-
-      const formattedReplyText = convertOutputMentions(
-        replyText,
-        message.channel,
-        client,
-      );
-
-      const replyChunks = chunkReplyText(formattedReplyText);
-      let lastSent: Message | null = null;
-      if (replyChunks.length > 0) {
-        const [firstChunk, ...restChunks] = replyChunks;
-        lastSent = await message.reply(firstChunk);
-
-        for (const chunk of restChunks) {
-          if (hasSend(message.channel)) {
-            lastSent = await message.channel.send(chunk);
-          } else {
-            lastSent = await message.reply(chunk);
-          }
-        }
+      // Check if this bot is already processing this channel
+      const lockKey = `${client.user?.id}:${channelId}`;
+      if (processingChannels.has(lockKey)) {
+        console.log(
+          `[${config.name}] Already processing ${channelId}, skipping duplicate`,
+        );
+        return;
       }
 
-      console.log(
-        `[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${
-          replyChunks.length === 1 ? '' : 's'
-        })`,
-      );
+      // Acquire lock
+      processingChannels.add(lockKey);
+
+      try {
+        const conversationData = await fetchConversationFromDiscord(
+          message.channel,
+          resolved.maxContextTokens,
+          client,
+        );
+
+        stopTyping = startTypingIndicator(message.channel);
+        const imageBlocks = getImageBlocksFromAttachments(message.attachments);
+        const aiReply = await aiProvider.send({
+          conversationData,
+          botDisplayName,
+          imageBlocks,
+        });
+        const replyText = aiReply.text;
+        stopTyping();
+        stopTyping = null;
+
+        const formattedReplyText = convertOutputMentions(
+          replyText,
+          message.channel,
+          client,
+        );
+
+        const replyChunks = chunkReplyText(formattedReplyText);
+        let lastSent: Message | null = null;
+        if (replyChunks.length > 0) {
+          const [firstChunk, ...restChunks] = replyChunks;
+          lastSent = await message.reply(firstChunk);
+
+          for (const chunk of restChunks) {
+            if (hasSend(message.channel)) {
+              lastSent = await message.channel.send(chunk);
+            } else {
+              lastSent = await message.reply(chunk);
+            }
+          }
+        }
+
+        console.log(
+          `[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${
+            replyChunks.length === 1 ? '' : 's'
+          })`,
+        );
+      } finally {
+        // Release lock
+        processingChannels.delete(lockKey);
+      }
     } catch (err) {
       console.error(`[${config.name}] Error handling message:`, err);
       try {

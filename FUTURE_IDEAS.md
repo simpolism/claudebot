@@ -66,4 +66,4 @@ Any new features should follow IMP principles:
 - **Transparent infrastructure** - The harness should enable participation, not shape personality
 - **Structural support** - Focus on providing capabilities, not prescribing how to use them
 
-The goal is computer friends being themselves, not tools being managed.
+The goal is AI friends being themselves, not tools being managed.
