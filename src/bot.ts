@@ -3,32 +3,24 @@ import {
   Attachment,
   ChannelType,
   Client,
+  Collection,
   Events,
   GatewayIntentBits,
   Message,
   Partials,
   PrivateThreadChannel,
   PublicThreadChannel,
+  TextChannel,
 } from 'discord.js';
-import Database from 'better-sqlite3';
 import { createAIProvider } from './providers';
 import { ImageBlock, SimpleMessage } from './types';
 
 // ---------- Config ----------
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const MAIN_CHANNEL_ID = process.env.MAIN_CHANNEL_ID; // text channel id
-const CLAUDE_MODEL =
-  process.env.CLAUDE_MODEL || 'claude-haiku-4-5';
-const MESSAGE_CACHE_LIMIT = parseInt(
-  process.env.MESSAGE_CACHE_LIMIT || '500',
-  10,
-);
-const BOOTSTRAP_MESSAGE_LIMIT = parseInt(
-  process.env.BOOTSTRAP_MESSAGE_LIMIT || `${MESSAGE_CACHE_LIMIT}`,
-  10,
-);
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-4-5';
 const MAX_CONTEXT_TOKENS = parseInt(
-  process.env.MAX_CONTEXT_TOKENS || '180000',
+  process.env.MAX_CONTEXT_TOKENS || '100000',
   10,
 );
 const APPROX_CHARS_PER_TOKEN = parseFloat(
@@ -39,7 +31,7 @@ const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '1024', 10);
 const TEMPERATURE = parseFloat(process.env.TEMPERATURE || '1');
 const CLI_SIM_MODE = parseBooleanFlag(process.env.CLI_SIM_MODE);
 const DEFAULT_SYSTEM_PROMPT =
-  'The assistant is in CLI simulation mode, and responds to the user\'s CLI commands only with the output of the command.';
+  "The assistant is in CLI simulation mode, and responds to the user's CLI commands only with the output of the command.";
 const SYSTEM_PROMPT = CLI_SIM_MODE ? DEFAULT_SYSTEM_PROMPT : '';
 const PREFILL_COMMAND = CLI_SIM_MODE ? '<cmd>cat untitled.txt</cmd>' : '';
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
@@ -55,8 +47,6 @@ const STARTUP_CONFIG = {
   claudeModel: CLAUDE_MODEL,
   openaiModel: OPENAI_MODEL,
   openaiBaseURL: OPENAI_BASE_URL,
-  messageCacheLimit: MESSAGE_CACHE_LIMIT,
-  bootstrapMessageLimit: BOOTSTRAP_MESSAGE_LIMIT,
   maxContextTokens: MAX_CONTEXT_TOKENS,
   maxTokens: MAX_TOKENS,
   temperature: TEMPERATURE,
@@ -66,54 +56,6 @@ const STARTUP_CONFIG = {
 };
 
 console.log('Starting bot with configuration:', STARTUP_CONFIG);
-
-// ---------- SQLite setup (file-based cache) ----------
-const db = new Database('claude-cache.sqlite');
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel_id TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-  author_id TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_messages_channel_created_at
-  ON messages(channel_id, created_at);
-`);
-
-const insertMessageStmt = db.prepare<
-  [channelId: string, role: string, authorId: string, content: string, createdAt: number]
->(`
-  INSERT INTO messages (channel_id, role, author_id, content, created_at)
-  VALUES (?, ?, ?, ?, ?)
-`);
-
-const getRecentMessagesStmt = db.prepare<
-  [channelId: string, limit: number],
-  { id: number; role: 'user' | 'assistant'; content: string; created_at: number }
->(`
-  SELECT id, role, content, created_at
-  FROM messages
-  WHERE channel_id = ?
-  ORDER BY created_at DESC
-  LIMIT ?
-`);
-
-const deleteMessagesThroughStmt = db.prepare<
-  [channelId: string, maxId: number]
->(`
-  DELETE FROM messages
-  WHERE channel_id = ?
-    AND id <= ?
-`);
-
-const countMessagesStmt = db.prepare<[], { count: number }>(`
-  SELECT COUNT(*) as count FROM messages
-`);
 
 function parseBooleanFlag(value: string | undefined): boolean {
   if (!value) return false;
@@ -126,22 +68,6 @@ function parseBooleanFlag(value: string | undefined): boolean {
     default:
       return false;
   }
-}
-
-function saveMessage(
-  channelId: string,
-  role: 'user' | 'assistant',
-  authorId: string,
-  content: string,
-  createdAt?: number,
-) {
-  insertMessageStmt.run(
-    channelId,
-    role,
-    authorId,
-    content,
-    createdAt ?? Date.now(),
-  );
 }
 
 // ---------- Discord client ----------
@@ -205,115 +131,126 @@ function shouldRespond(message: Message): boolean {
   return message.mentions.has(client.user);
 }
 
-// Build conversation from cached messages for this channel/thread
-type CachedRow = {
-  id: number;
-  role: 'user' | 'assistant';
-  content: string;
-  tokens: number;
-};
-
-function buildConversation(channelId: string): SimpleMessage[] {
-  const rows = getRecentMessagesStmt.all(channelId, MESSAGE_CACHE_LIMIT);
-  if (!rows.length) {
-    return [];
-  }
-
-  rows.reverse();
-  const tokenizedRows: CachedRow[] = rows.map((row) => ({
-    id: row.id,
-    role: row.role,
-    content: row.content,
-    tokens: estimateTokens(row.content) + 4,
-  }));
-
-  const { messages, prunedMaxId } = segmentConversationRows(tokenizedRows);
-  if (typeof prunedMaxId === 'number') {
-    try {
-      deleteMessagesThroughStmt.run(channelId, prunedMaxId);
-    } catch (err) {
-      console.warn(`Failed to prune channel ${channelId} history`, err);
-    }
-  }
-
-  return messages;
-}
-
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / Math.max(APPROX_CHARS_PER_TOKEN, 1));
 }
 
-function segmentConversationRows(rows: CachedRow[]): {
-  messages: SimpleMessage[];
-  prunedMaxId?: number;
-} {
-  const maxSegments = 3;
-  const targetTokensPerSegment = Math.max(
-    1,
-    Math.floor(MAX_CONTEXT_TOKENS / maxSegments),
-  );
-
-  type Segment = { rows: CachedRow[]; tokens: number };
-  const segments: Segment[] = [];
-  let totalTokens = 0;
-  let prunedMaxId: number | undefined;
-
-  const recordPrunedSegment = (segment?: Segment) => {
-    if (!segment || segment.rows.length === 0) return;
-    totalTokens -= segment.tokens;
-    const lastRow = segment.rows[segment.rows.length - 1];
-    if (lastRow) {
-      prunedMaxId = prunedMaxId
-        ? Math.max(prunedMaxId, lastRow.id)
-        : lastRow.id;
-    }
-  };
-
-  const startNewSegment = () => {
-    segments.push({ rows: [], tokens: 0 });
-  };
-
-  for (const row of rows) {
-    while (
-      segments.length === maxSegments &&
-      totalTokens + row.tokens > MAX_CONTEXT_TOKENS &&
-      segments[0]?.rows.length
-    ) {
-      recordPrunedSegment(segments.shift());
-    }
-
-    if (
-      segments.length === 0 ||
-      (segments.length < maxSegments &&
-        segments[segments.length - 1].tokens >= targetTokensPerSegment)
-    ) {
-      startNewSegment();
-    } else if (
-      segments.length === maxSegments &&
-      segments[segments.length - 1].tokens >= targetTokensPerSegment
-    ) {
-      recordPrunedSegment(segments.shift());
-      startNewSegment();
-    }
-
-    if (segments.length === 0) {
-      startNewSegment();
-    }
-
-    const current = segments[segments.length - 1];
-    current.rows.push(row);
-    current.tokens += row.tokens;
-    totalTokens += row.tokens;
+// Fetch messages from a channel until we hit a token budget
+async function fetchMessagesWithTokenBudget(
+  channel: Message['channel'],
+  tokenBudget: number,
+): Promise<{ messages: SimpleMessage[]; tokensUsed: number }> {
+  if (!channel.isTextBased()) {
+    return { messages: [], tokensUsed: 0 };
   }
 
-  const messages = segments.flatMap((segment) =>
-    segment.rows.map((row) => ({
-      role: row.role,
-      content: row.content,
-    })),
+  const messages: SimpleMessage[] = [];
+  let totalTokens = 0;
+  let lastId: string | undefined;
+
+  while (totalTokens < tokenBudget) {
+    const fetched: Collection<string, Message> = await channel.messages.fetch({
+      limit: 100,
+      before: lastId,
+    });
+
+    if (fetched.size === 0) {
+      break;
+    }
+
+    for (const msg of fetched.values()) {
+      const isAssistant =
+        Boolean(client.user) && msg.author.id === client.user?.id;
+      const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
+      const attachmentSummary = buildAttachmentSummary(msg.attachments);
+      const messageContent = replaceUserMentions(
+        msg.content || '(empty message)',
+        msg,
+      );
+      const storedContent = attachmentSummary
+        ? `${messageContent}\n${attachmentSummary}`
+        : messageContent;
+      const authorName = isAssistant
+        ? getBotCanonicalName()
+        : getUserCanonicalName(msg);
+
+      const formattedContent = formatAuthoredContent(authorName, storedContent);
+      const messageTokens = estimateTokens(formattedContent) + 4;
+
+      if (totalTokens + messageTokens > tokenBudget) {
+        break;
+      }
+
+      messages.push({
+        role,
+        content: formattedContent,
+      });
+      totalTokens += messageTokens;
+    }
+
+    if (totalTokens >= tokenBudget) {
+      break;
+    }
+
+    lastId = fetched.last()?.id;
+  }
+
+  messages.reverse();
+  return { messages, tokensUsed: totalTokens };
+}
+
+// Fetch messages from Discord until we hit the soft token limit
+// For threads, includes parent channel context
+async function fetchConversationFromDiscord(
+  channel: Message['channel'],
+): Promise<SimpleMessage[]> {
+  if (!channel.isTextBased()) {
+    return [];
+  }
+
+  let parentContext: SimpleMessage[] = [];
+  let parentTokens = 0;
+
+  // If this is a thread, fetch some parent channel context first
+  if (isThreadChannel(channel) && channel.parent?.isTextBased()) {
+    // Reserve up to 20% of token budget for parent context
+    const parentBudget = Math.floor(MAX_CONTEXT_TOKENS * 0.2);
+    const parentResult = await fetchMessagesWithTokenBudget(
+      channel.parent,
+      parentBudget,
+    );
+    parentContext = parentResult.messages;
+    parentTokens = parentResult.tokensUsed;
+
+    if (parentContext.length > 0) {
+      // Add a separator to indicate transition to thread
+      const separatorContent = '--- Thread started ---';
+      const separatorTokens = estimateTokens(separatorContent) + 4;
+      parentContext.push({
+        role: 'user',
+        content: separatorContent,
+      });
+      parentTokens += separatorTokens;
+
+      console.log(
+        `Fetched ${parentContext.length - 1} parent channel messages (~${parentTokens} tokens)`,
+      );
+    }
+  }
+
+  // Fetch thread/channel messages with remaining budget
+  const remainingBudget = MAX_CONTEXT_TOKENS - parentTokens;
+  const { messages: channelMessages, tokensUsed: channelTokens } =
+    await fetchMessagesWithTokenBudget(channel, remainingBudget);
+
+  const totalMessages = [...parentContext, ...channelMessages];
+  const totalTokens = parentTokens + channelTokens;
+
+  console.log(
+    `Total conversation: ${totalMessages.length} messages (~${totalTokens} tokens)`,
   );
 
-  return { messages, prunedMaxId };
+  return totalMessages;
 }
 
 function chunkReplyText(text: string): string[] {
@@ -422,11 +359,7 @@ function formatAuthoredContent(authorName: string, content: string): string {
 const USER_MENTION_REGEX = /<@!?(\d+)>/g;
 
 function formatMentionName(user: Message['author']): string {
-  return (
-    user.username ??
-    user.globalName ??
-    user.tag
-  );
+  return user.username ?? user.globalName ?? user.tag;
 }
 
 function replaceUserMentions(content: string, message: Message): string {
@@ -443,91 +376,55 @@ function replaceUserMentions(content: string, message: Message): string {
   });
 }
 
-async function bootstrapHistory(): Promise<void> {
-  const result = countMessagesStmt.get();
-  const count = result?.count ?? 0;
-  if (count > 0) {
-    return;
-  }
+// Convert @Username in bot output back to Discord mention format
+function convertOutputMentions(
+  text: string,
+  channel: Message['channel'],
+): string {
+  if (!channel.isTextBased()) return text;
 
-  if (!MAIN_CHANNEL_ID) {
-    console.warn('Cannot bootstrap history: MAIN_CHANNEL_ID is unset.');
-    return;
-  }
+  // Build a map of usernames to user IDs
+  const usernameToId = new Map<string, string>();
 
-  try {
-    const channel = await client.channels.fetch(MAIN_CHANNEL_ID);
-    if (!channel || !channel.isTextBased()) {
-      console.warn(
-        `Unable to bootstrap history: channel ${MAIN_CHANNEL_ID} is not text-based or could not be fetched.`,
-      );
-      return;
+  // Add all users the client knows about
+  client.users.cache.forEach((user) => {
+    usernameToId.set(user.username.toLowerCase(), user.id);
+    if (user.globalName) {
+      usernameToId.set(user.globalName.toLowerCase(), user.id);
     }
+  });
 
-    const collectedMessages: Message[] = [];
-    let lastId: string | undefined;
-    while (collectedMessages.length < BOOTSTRAP_MESSAGE_LIMIT) {
-      const remaining = BOOTSTRAP_MESSAGE_LIMIT - collectedMessages.length;
-      const fetchLimit = Math.min(remaining, 100);
-      const fetched = await channel.messages.fetch({
-        limit: fetchLimit,
-        before: lastId,
-      });
-
-      if (fetched.size === 0) {
-        break;
+  // Also check guild members if available (for nicknames)
+  if ('guild' in channel && channel.guild) {
+    channel.guild.members.cache.forEach((member) => {
+      usernameToId.set(member.user.username.toLowerCase(), member.user.id);
+      if (member.nickname) {
+        usernameToId.set(member.nickname.toLowerCase(), member.user.id);
       }
-
-      const newMessages = [...fetched.values()];
-      collectedMessages.push(...newMessages);
-      lastId = newMessages[newMessages.length - 1]?.id;
-    }
-
-    const sortedMessages = collectedMessages
-      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-      .slice(-BOOTSTRAP_MESSAGE_LIMIT);
-
-    console.log(
-      `Bootstrapping ${sortedMessages.length} historical message${
-        sortedMessages.length === 1 ? '' : 's'
-      } from channel ${MAIN_CHANNEL_ID}`,
-    );
-
-    for (const msg of sortedMessages) {
-      const isAssistant =
-        Boolean(client.user) && msg.author.id === client.user?.id;
-      const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
-      const attachmentSummary = buildAttachmentSummary(msg.attachments);
-      const messageContent = replaceUserMentions(
-        msg.content || '(empty message)',
-        msg,
-      );
-      const storedContent = attachmentSummary
-        ? `${messageContent}\n${attachmentSummary}`
-        : messageContent;
-      const authorName = isAssistant
-        ? getBotCanonicalName()
-        : getUserCanonicalName(msg);
-
-      saveMessage(
-        msg.channel.id,
-        role,
-        msg.author.id,
-        formatAuthoredContent(authorName, storedContent),
-        msg.createdTimestamp,
-      );
-    }
-  } catch (err) {
-    console.error('Failed to bootstrap message history:', err);
+      if (member.user.globalName) {
+        usernameToId.set(member.user.globalName.toLowerCase(), member.user.id);
+      }
+    });
   }
+
+  // Replace @Username patterns with <@id>
+  return text.replace(/@(\w+)/g, (match, name) => {
+    const id = usernameToId.get(name.toLowerCase());
+    return id ? `<@${id}>` : match;
+  });
 }
 
 type TypingCapableChannel = Message['channel'] & {
   sendTyping: () => Promise<void>;
 };
 
-function hasTyping(channel: Message['channel']): channel is TypingCapableChannel {
-  return !!channel && typeof (channel as TypingCapableChannel).sendTyping === 'function';
+function hasTyping(
+  channel: Message['channel'],
+): channel is TypingCapableChannel {
+  return (
+    !!channel &&
+    typeof (channel as TypingCapableChannel).sendTyping === 'function'
+  );
 }
 
 function startTypingIndicator(channel: Message['channel']): () => void {
@@ -574,55 +471,28 @@ type SendCapableChannel = Message['channel'] & {
 };
 
 function hasSend(channel: Message['channel']): channel is SendCapableChannel {
-  return !!channel && typeof (channel as SendCapableChannel).send === 'function';
+  return (
+    !!channel && typeof (channel as SendCapableChannel).send === 'function'
+  );
 }
 
 // ---------- Events ----------
 client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
-  try {
-    await bootstrapHistory();
-  } catch (err) {
-    console.error('Bootstrap history failed:', err);
-  }
 });
 
 client.on(Events.MessageCreate, async (message) => {
   let stopTyping: (() => void) | null = null;
   try {
-    const channelId = message.channel.id;
-    const userContent = message.content || '(empty message)';
-    const canCacheUserMessage = isInScope(message) && !message.author.bot;
-    const attachmentSummary = buildAttachmentSummary(message.attachments);
-    const userDisplayName = getUserCanonicalName(message);
-    const normalizedUserText = replaceUserMentions(userContent, message);
-    const storedUserContent = formatAuthoredContent(
-      userDisplayName,
-      attachmentSummary
-        ? `${normalizedUserText}\n${attachmentSummary}`
-        : normalizedUserText,
-    );
-
-    if (canCacheUserMessage) {
-      saveMessage(
-        channelId,
-        'user',
-        message.author.id,
-        storedUserContent,
-        message.createdTimestamp,
-      );
-    }
-
     if (!shouldRespond(message)) return;
 
+    const channelId = message.channel.id;
     const botDisplayName = getBotCanonicalName();
-    // Save user message for this channel/thread context
-    // (already cached above when canCacheUserMessage true)
 
-    // Build conversation (recent history + this new message)
-    const conversation = buildConversation(channelId);
+    // Fetch conversation history from Discord
+    const conversation = await fetchConversationFromDiscord(message.channel);
 
-    // Call Claude
+    // Call AI provider
     stopTyping = startTypingIndicator(message.channel);
     const imageBlocks = getImageBlocksFromAttachments(message.attachments);
     const claudeReply = await aiProvider.send({
@@ -634,19 +504,18 @@ client.on(Events.MessageCreate, async (message) => {
     stopTyping();
     stopTyping = null;
 
+    // Convert @Username mentions in output to Discord format
+    const formattedReplyText = convertOutputMentions(
+      replyText,
+      message.channel,
+    );
+
     // Send reply (chunked to satisfy Discord's message length limit)
-    const replyChunks = chunkReplyText(replyText);
+    const replyChunks = chunkReplyText(formattedReplyText);
     let lastSent: Message | null = null;
     if (replyChunks.length > 0) {
       const [firstChunk, ...restChunks] = replyChunks;
       lastSent = await message.reply(firstChunk);
-      saveMessage(
-        channelId,
-        'assistant',
-        lastSent.author.id,
-        formatAuthoredContent(botDisplayName, firstChunk),
-        lastSent.createdTimestamp,
-      );
 
       for (const chunk of restChunks) {
         if (hasSend(message.channel)) {
@@ -654,13 +523,6 @@ client.on(Events.MessageCreate, async (message) => {
         } else {
           lastSent = await message.reply(chunk);
         }
-        saveMessage(
-          channelId,
-          'assistant',
-          lastSent.author.id,
-          formatAuthoredContent(botDisplayName, chunk),
-          lastSent.createdTimestamp,
-        );
       }
     }
 
@@ -672,9 +534,7 @@ client.on(Events.MessageCreate, async (message) => {
   } catch (err) {
     console.error('Error handling message:', err);
     try {
-      await message.reply(
-        "Sorry, I hit an error. Check the bot logs.",
-      );
+      await message.reply('Sorry, I hit an error. Check the bot logs.');
     } catch {
       // ignore
     }
