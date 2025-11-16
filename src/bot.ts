@@ -10,7 +10,6 @@ import {
   Partials,
   PrivateThreadChannel,
   PublicThreadChannel,
-  TextChannel,
 } from 'discord.js';
 import { createAIProvider } from './providers';
 import { ImageBlock, SimpleMessage } from './types';
