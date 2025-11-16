@@ -288,6 +288,43 @@ async function fetchConversationFromDiscord(
     return { cachedBlocks: [], tail: [] };
   }
 
+  // Check if this is a thread - if so, include parent channel context
+  let parentContextData: ConversationData | null = null;
+  let parentContextTokens = 0;
+  const PARENT_CONTEXT_RATIO = 0.2; // Allocate 20% of budget to parent context
+
+  if (isThreadChannel(channel) && channel.parent && channel.parent.isTextBased()) {
+    const parentBudget = Math.floor(maxContextTokens * PARENT_CONTEXT_RATIO);
+    console.log(
+      `[${getBotCanonicalName(client)}] Thread detected, fetching parent channel context (~${parentBudget} tokens)`,
+    );
+
+    // Fetch parent channel context (no caching for parent - keep it simple)
+    const parentMessages = await fetchMessagesAfter(
+      channel.parent,
+      null, // Fetch from beginning up to budget
+      parentBudget,
+      client,
+    );
+
+    if (parentMessages.length > 0) {
+      const parentText = parentMessages.map((m) => m.formattedText).join('\n');
+      parentContextTokens = parentMessages.reduce((sum, m) => sum + m.tokens, 0);
+
+      // Create a special block for parent context
+      parentContextData = {
+        cachedBlocks: [`--- Parent Channel Context ---\n${parentText}\n--- Thread Messages ---`],
+        tail: [],
+      };
+
+      console.log(
+        `[${getBotCanonicalName(client)}] Parent context: ${parentMessages.length} messages (~${parentContextTokens} tokens)`,
+      );
+    }
+  }
+
+  // Adjust budget for thread messages
+  const threadBudget = maxContextTokens - parentContextTokens;
   const channelId = channel.id;
 
   // Get existing cached blocks
@@ -299,7 +336,7 @@ async function fetchConversationFromDiscord(
     (sum, block) => sum + block.tokenCount,
     0,
   );
-  const remainingBudget = maxContextTokens - cachedTokens;
+  const remainingBudget = threadBudget - cachedTokens;
 
   // Fetch new messages after the last cached one
   const newMessages = await fetchMessagesAfter(
@@ -336,22 +373,27 @@ async function fetchConversationFromDiscord(
     });
   }
 
-  const cachedBlockTexts = finalCachedBlocks.map((block) => block.text);
-  const totalCachedTokens = finalCachedBlocks.reduce(
-    (sum, block) => sum + block.tokenCount,
-    0,
-  );
+  // Combine parent context with thread context
+  const allCachedBlocks = [
+    ...(parentContextData?.cachedBlocks || []),
+    ...finalCachedBlocks.map((block) => block.text),
+  ];
+
+  const totalCachedTokens =
+    parentContextTokens +
+    finalCachedBlocks.reduce((sum, block) => sum + block.tokenCount, 0);
   const tailTokens = tail.reduce(
     (sum, msg) => sum + estimateTokens(msg.content) + 4,
     0,
   );
 
+  const contextType = parentContextData ? 'Thread' : 'Channel';
   console.log(
-    `[${getBotCanonicalName(client)}] Conversation: ${finalCachedBlocks.length} cached blocks (~${totalCachedTokens} tokens) + ${tail.length} tail messages (~${tailTokens} tokens)`,
+    `[${getBotCanonicalName(client)}] ${contextType} conversation: ${allCachedBlocks.length} cached blocks (~${totalCachedTokens} tokens) + ${tail.length} tail messages (~${tailTokens} tokens)`,
   );
 
   return {
-    cachedBlocks: cachedBlockTexts,
+    cachedBlocks: allCachedBlocks,
     tail,
   };
 }

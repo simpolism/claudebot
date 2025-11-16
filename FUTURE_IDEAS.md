@@ -57,12 +57,6 @@ Social context is limited:
 - **User roles/expertise** - Tailor responses based on known backgrounds
 - **Group dynamics** - Understand social relationships in the channel
 
-## Regressions to Address
-
-From recent refactoring:
-
-- **Thread context inheritance** - When in a thread, include parent channel context so the AI remembers what led to the thread. Currently lost when moving to thread. Should allocate ~20% of token budget to parent context.
-
 ## Implementation Notes
 
 Any new features should follow IMP principles:

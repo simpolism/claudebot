@@ -34,7 +34,7 @@ Run multiple AI personalities in a single process:
 - Fetches directly from Discord API (Discord is source of truth)
 - Soft token limit (~100k default) - fetches until budget is met
 - Transcript format puts entire conversation in one block
-- Thread context inheritance - when in a thread, includes parent channel history
+- Thread context inheritance - when in a thread, allocates ~20% of token budget to parent channel history so the AI understands what led to the thread
 
 ### Prompt Caching (Anthropic)
 - Stable block boundaries for cache hits
