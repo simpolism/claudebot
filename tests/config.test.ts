@@ -1,11 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const ENV_KEYS = [
-  'MAIN_CHANNEL_IDS',
-  'MAX_CONTEXT_TOKENS',
-  'MAX_TOKENS',
-  'TEMPERATURE',
-];
+const ENV_KEYS = ['MAIN_CHANNEL_IDS', 'MAX_CONTEXT_TOKENS', 'MAX_TOKENS', 'TEMPERATURE'];
 
 beforeEach(() => {
   vi.resetModules();

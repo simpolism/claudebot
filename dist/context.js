@@ -25,7 +25,7 @@ async function buildConversationContext(params) {
         return { cachedBlocks: [], tail: [] };
     }
     // Check if this is a thread - if so, include parent channel context
-    let parentCachedBlocks = [];
+    const parentCachedBlocks = [];
     let parentContextTokens = 0;
     const PARENT_CONTEXT_RATIO = 0.5; // Allocate 50% of budget to parent context (cached blocks are cheap!)
     if (isThreadChannel(channel) && channel.parent && channel.parent.isTextBased()) {
@@ -69,8 +69,7 @@ async function buildConversationContext(params) {
     // Build the tail (messages after the last cached block)
     const tail = [];
     for (const msg of newMessages) {
-        if (finalLastCachedId &&
-            BigInt(msg.id) <= BigInt(finalLastCachedId)) {
+        if (finalLastCachedId && BigInt(msg.id) <= BigInt(finalLastCachedId)) {
             continue;
         }
         tail.push({
@@ -166,18 +165,13 @@ async function fetchMessagesAfter(channel, afterMessageId, tokenBudget, client) 
     return messages;
 }
 function getBotCanonicalName(client) {
-    return (client.user?.username ??
-        client.user?.globalName ??
-        client.user?.tag ??
-        'Bot');
+    return client.user?.username ?? client.user?.globalName ?? client.user?.tag ?? 'Bot';
 }
 function estimateTokens(text) {
     return Math.ceil(text.length / Math.max(config_1.globalConfig.approxCharsPerToken, 1));
 }
 function getUserCanonicalName(message) {
-    return (message.author.username ??
-        message.author.globalName ??
-        message.author.tag);
+    return message.author.username ?? message.author.globalName ?? message.author.tag;
 }
 function formatAuthoredContent(authorName, content) {
     const normalized = content.trim();
@@ -191,9 +185,7 @@ function replaceUserMentions(content, message, client) {
     if (!content)
         return content;
     return content.replace(USER_MENTION_REGEX, (match, userId) => {
-        const mentionedUser = message.mentions.users.get(userId) ??
-            client.users.cache.get(userId) ??
-            null;
+        const mentionedUser = message.mentions.users.get(userId) ?? client.users.cache.get(userId) ?? null;
         if (!mentionedUser) {
             return match;
         }

@@ -55,14 +55,10 @@ function shouldRespond(message, client) {
     return true;
 }
 function getBotCanonicalName(client) {
-    return (client.user?.username ??
-        client.user?.globalName ??
-        client.user?.tag ??
-        'Bot');
+    return client.user?.username ?? client.user?.globalName ?? client.user?.tag ?? 'Bot';
 }
 function hasTyping(channel) {
-    return (!!channel &&
-        typeof channel.sendTyping === 'function');
+    return !!channel && typeof channel.sendTyping === 'function';
 }
 function startTypingIndicator(channel) {
     if (!hasTyping(channel)) {
@@ -101,7 +97,7 @@ function startTypingIndicator(channel) {
     };
 }
 function hasSend(channel) {
-    return (!!channel && typeof channel.send === 'function');
+    return !!channel && typeof channel.send === 'function';
 }
 // ---------- Bot Instance Setup ----------
 function createBotInstance(botConfig) {
@@ -117,9 +113,7 @@ function createBotInstance(botConfig) {
     const systemPrompt = resolved.cliSimMode
         ? "The assistant is in CLI simulation mode, and responds to the user's CLI commands only with the output of the command."
         : '';
-    const prefillCommand = resolved.cliSimMode
-        ? '<cmd>cat untitled.txt</cmd>'
-        : '';
+    const prefillCommand = resolved.cliSimMode ? '<cmd>cat untitled.txt</cmd>' : '';
     const aiProvider = (0, providers_1.createAIProvider)({
         provider: resolved.provider,
         systemPrompt,
@@ -132,6 +126,7 @@ function createBotInstance(botConfig) {
         openaiModel: resolved.model,
         openaiBaseURL: resolved.openaiBaseUrl || 'https://api.openai.com/v1',
         openaiApiKey: resolved.openaiApiKey || '',
+        supportsImageBlocks: Boolean(botConfig.supportsImageBlocks),
     });
     return { config: botConfig, client, aiProvider };
 }
@@ -188,16 +183,15 @@ function setupBotEvents(instance) {
                 stopTyping = null;
                 const formattedReplyText = (0, discord_utils_1.convertOutputMentions)(replyText, message.channel, client);
                 const replyChunks = (0, discord_utils_1.chunkReplyText)(formattedReplyText);
-                let lastSent = null;
                 if (replyChunks.length > 0) {
                     const [firstChunk, ...restChunks] = replyChunks;
-                    lastSent = await message.reply(firstChunk);
+                    await message.reply(firstChunk);
                     for (const chunk of restChunks) {
                         if (hasSend(message.channel)) {
-                            lastSent = await message.channel.send(chunk);
+                            await message.channel.send(chunk);
                         }
                         else {
-                            lastSent = await message.reply(chunk);
+                            await message.reply(chunk);
                         }
                     }
                 }
@@ -227,9 +221,7 @@ async function main() {
     // Load conversation cache for stable prompt caching
     (0, cache_1.loadCache)();
     console.log('Starting multi-bot system with configuration:', {
-        mainChannelIds: config_1.globalConfig.mainChannelIds.length > 0
-            ? config_1.globalConfig.mainChannelIds
-            : ['(unset)'],
+        mainChannelIds: config_1.globalConfig.mainChannelIds.length > 0 ? config_1.globalConfig.mainChannelIds : ['(unset)'],
         maxContextTokens: config_1.globalConfig.maxContextTokens,
         maxTokens: config_1.globalConfig.maxTokens,
         temperature: config_1.globalConfig.temperature,

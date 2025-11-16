@@ -4,7 +4,6 @@ import OpenAI from 'openai';
 import type {
   ChatCompletionChunk,
   ChatCompletionContentPart,
-  ChatCompletionContentPartText,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions/completions';
 import {
@@ -27,6 +26,7 @@ type ProviderInitOptions = {
   openaiModel: string;
   openaiBaseURL: string;
   openaiApiKey: string;
+  supportsImageBlocks: boolean;
 };
 
 type ProviderRequest = {
@@ -203,6 +203,7 @@ class OpenAIProvider implements AIProvider {
   private temperature: number;
   private maxTokens: number;
   private model: string;
+  private supportsImageBlocks: boolean;
 
   constructor(options: ProviderInitOptions) {
     const apiKey = options.openaiApiKey;
@@ -214,6 +215,7 @@ class OpenAIProvider implements AIProvider {
     this.temperature = options.temperature;
     this.maxTokens = options.maxTokens;
     this.model = options.openaiModel;
+    this.supportsImageBlocks = options.supportsImageBlocks;
     this.client = new OpenAI({
       apiKey,
       baseURL: options.openaiBaseURL,
@@ -245,10 +247,39 @@ class OpenAIProvider implements AIProvider {
       });
     }
 
-    messages.push({
-      role: 'assistant',
-      content: transcriptText + `\n\n${botDisplayName}:`,
-    });
+    const assistantText = transcriptText + `\n\n${botDisplayName}:`;
+    if (this.supportsImageBlocks) {
+      const userContent: ChatCompletionContentPart[] = [
+        {
+          type: 'text' as const,
+          text: transcriptText,
+        },
+      ];
+      if (imageBlocks.length > 0) {
+        userContent.push(
+          ...imageBlocks.map((block) => ({
+            type: 'image_url' as const,
+            image_url: {
+              url: block.source.url,
+            },
+          })),
+        );
+      }
+
+      messages.push({
+        role: 'user',
+        content: userContent,
+      });
+      messages.push({
+        role: 'assistant',
+        content: botDisplayName + ':',
+      });
+    } else {
+      messages.push({
+        role: 'assistant',
+        content: assistantText,
+      });
+    }
 
     const stream = await this.client.chat.completions.create({
       model: this.model,
@@ -329,10 +360,7 @@ function finalizeResponse(text: string, guard: FragmentationGuard): AIResponse {
   };
 }
 
-function buildTranscriptFromData(
-  cachedBlocks: string[],
-  tail: SimpleMessage[],
-): string {
+function buildTranscriptFromData(cachedBlocks: string[], tail: SimpleMessage[]): string {
   const parts: string[] = [...cachedBlocks];
   if (tail.length > 0) {
     parts.push(tail.map((m) => m.content).join('\n'));
@@ -370,10 +398,7 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function extractSpeakersFromText(
-  text: string,
-  botDisplayName: string,
-): string[] {
+function extractSpeakersFromText(text: string, botDisplayName: string): string[] {
   const normalizedBot = botDisplayName.toLowerCase();
   const names = new Set<string>();
 
@@ -394,10 +419,7 @@ function extractSpeakersFromText(
 function buildFragmentationRegex(names: string[]): RegExp | null {
   if (names.length === 0) return null;
   const escapedNames = names.map(escapeRegExp).join('|');
-  return new RegExp(
-    `(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`,
-    'gi',
-  );
+  return new RegExp(`(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`, 'gi');
 }
 
 function isAbortError(error: unknown): boolean {

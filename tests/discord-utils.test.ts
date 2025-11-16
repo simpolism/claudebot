@@ -9,7 +9,9 @@ afterEach(() => {
   globalConfig.discordMessageLimit = originalLimit;
 });
 
-function buildClient(users: Array<{ id: string; username: string; globalName?: string }>) {
+function buildClient(
+  users: Array<{ id: string; username: string; globalName?: string }>,
+) {
   const cache = new Map(
     users.map((user) => [
       user.id,

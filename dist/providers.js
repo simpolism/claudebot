@@ -146,6 +146,7 @@ class OpenAIProvider {
         this.temperature = options.temperature;
         this.maxTokens = options.maxTokens;
         this.model = options.openaiModel;
+        this.supportsImageBlocks = options.supportsImageBlocks;
         this.client = new openai_1.default({
             apiKey,
             baseURL: options.openaiBaseURL,
@@ -173,10 +174,37 @@ class OpenAIProvider {
                 content: trimmedPrefillCommand,
             });
         }
-        messages.push({
-            role: 'assistant',
-            content: transcriptText + `\n\n${botDisplayName}:`,
-        });
+        const assistantText = transcriptText + `\n\n${botDisplayName}:`;
+        if (this.supportsImageBlocks) {
+            const userContent = [
+                {
+                    type: 'text',
+                    text: transcriptText,
+                },
+            ];
+            if (imageBlocks.length > 0) {
+                userContent.push(...imageBlocks.map((block) => ({
+                    type: 'image_url',
+                    image_url: {
+                        url: block.source.url,
+                    },
+                })));
+            }
+            messages.push({
+                role: 'user',
+                content: userContent,
+            });
+            messages.push({
+                role: 'assistant',
+                content: botDisplayName + ':',
+            });
+        }
+        else {
+            messages.push({
+                role: 'assistant',
+                content: assistantText,
+            });
+        }
         const stream = await this.client.chat.completions.create({
             model: this.model,
             temperature: this.temperature,

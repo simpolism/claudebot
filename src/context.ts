@@ -8,11 +8,7 @@ import {
   PublicThreadChannel,
 } from 'discord.js';
 import { globalConfig } from './config';
-import {
-  getCachedBlocks,
-  getLastCachedMessageId,
-  updateCache,
-} from './cache';
+import { getCachedBlocks, getLastCachedMessageId, updateCache } from './cache';
 import { ConversationData, ImageBlock, SimpleMessage } from './types';
 
 export const GUARANTEED_TAIL_TOKENS = 8000;
@@ -66,7 +62,7 @@ export async function buildConversationContext(params: {
   }
 
   // Check if this is a thread - if so, include parent channel context
-  let parentCachedBlocks: string[] = [];
+  const parentCachedBlocks: string[] = [];
   let parentContextTokens = 0;
   const PARENT_CONTEXT_RATIO = 0.5; // Allocate 50% of budget to parent context (cached blocks are cheap!)
 
@@ -130,10 +126,7 @@ export async function buildConversationContext(params: {
   // Build the tail (messages after the last cached block)
   const tail: SimpleMessage[] = [];
   for (const msg of newMessages) {
-    if (
-      finalLastCachedId &&
-      BigInt(msg.id) <= BigInt(finalLastCachedId)
-    ) {
+    if (finalLastCachedId && BigInt(msg.id) <= BigInt(finalLastCachedId)) {
       continue;
     }
     tail.push({
@@ -150,10 +143,7 @@ export async function buildConversationContext(params: {
   const totalCachedTokens =
     parentContextTokens +
     finalCachedBlocks.reduce((sum, block) => sum + block.tokenCount, 0);
-  const tailTokens = tail.reduce(
-    (sum, msg) => sum + estimateTokens(msg.content) + 4,
-    0,
-  );
+  const tailTokens = tail.reduce((sum, msg) => sum + estimateTokens(msg.content) + 4, 0);
 
   const contextType = parentCachedBlocks.length > 0 ? 'Thread' : 'Channel';
   console.log(
@@ -240,8 +230,7 @@ async function fetchMessagesAfter(
   allFetched.reverse();
 
   for (const msg of allFetched) {
-    const isAssistant =
-      Boolean(client.user) && msg.author.id === client.user?.id;
+    const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
     const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
     const attachmentSummary = buildAttachmentSummary(msg.attachments);
     const messageContent = replaceUserMentions(
@@ -276,26 +265,15 @@ async function fetchMessagesAfter(
 }
 
 function getBotCanonicalName(client: Client): string {
-  return (
-    client.user?.username ??
-    client.user?.globalName ??
-    client.user?.tag ??
-    'Bot'
-  );
+  return client.user?.username ?? client.user?.globalName ?? client.user?.tag ?? 'Bot';
 }
 
 function estimateTokens(text: string): number {
-  return Math.ceil(
-    text.length / Math.max(globalConfig.approxCharsPerToken, 1),
-  );
+  return Math.ceil(text.length / Math.max(globalConfig.approxCharsPerToken, 1));
 }
 
 function getUserCanonicalName(message: Message): string {
-  return (
-    message.author.username ??
-    message.author.globalName ??
-    message.author.tag
-  );
+  return message.author.username ?? message.author.globalName ?? message.author.tag;
 }
 
 function formatAuthoredContent(authorName: string, content: string): string {
@@ -308,17 +286,11 @@ function formatMentionName(user: Message['author']): string {
   return user.username ?? user.globalName ?? user.tag;
 }
 
-function replaceUserMentions(
-  content: string,
-  message: Message,
-  client: Client,
-): string {
+function replaceUserMentions(content: string, message: Message, client: Client): string {
   if (!content) return content;
   return content.replace(USER_MENTION_REGEX, (match, userId) => {
     const mentionedUser =
-      message.mentions.users.get(userId) ??
-      client.users.cache.get(userId) ??
-      null;
+      message.mentions.users.get(userId) ?? client.users.cache.get(userId) ?? null;
     if (!mentionedUser) {
       return match;
     }
@@ -331,9 +303,7 @@ function isImageAttachment(attachment: Attachment): boolean {
   return contentType.startsWith('image/') && Boolean(attachment.url);
 }
 
-function buildAttachmentSummary(
-  attachments: Message['attachments'],
-): string | null {
+function buildAttachmentSummary(attachments: Message['attachments']): string | null {
   const lines: string[] = [];
 
   attachments.forEach((attachment) => {

@@ -109,11 +109,14 @@ export const botConfigs: BotConfig[] = [
     model: 'moonshotai/kimi-k2-instruct-0905',
     openaiBaseUrl: 'https://api.groq.com/openai/v1',
     openaiApiKey: process.env.GROQ_API_KEY || '',
+    supportsImageBlocks: true,
   },
 ];
 ```
 
 Bots without valid tokens are automatically skipped.
+
+Set `supportsImageBlocks: true` for OpenAI-compatible bots that can accept multimodal `image_url` inputs (e.g., GPT-4o). Leave it `false`/omitted for models that only handle text.
 
 ---
 
@@ -136,6 +139,7 @@ Bots are linted/formatted/tested via:
 npm run lint
 npm run format
 npm run test
+npm run typecheck
 ```
 
 ---

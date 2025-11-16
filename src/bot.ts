@@ -1,18 +1,7 @@
 import 'dotenv/config';
-import {
-  Client,
-  Events,
-  GatewayIntentBits,
-  Message,
-  Partials,
-} from 'discord.js';
+import { Client, Events, GatewayIntentBits, Message, Partials } from 'discord.js';
 import { createAIProvider, AIProvider } from './providers';
-import {
-  activeBotConfigs,
-  globalConfig,
-  resolveConfig,
-  BotConfig,
-} from './config';
+import { activeBotConfigs, globalConfig, resolveConfig, BotConfig } from './config';
 import { loadCache } from './cache';
 import {
   buildConversationContext,
@@ -87,12 +76,7 @@ function shouldRespond(message: Message, client: Client): boolean {
 }
 
 function getBotCanonicalName(client: Client): string {
-  return (
-    client.user?.username ??
-    client.user?.globalName ??
-    client.user?.tag ??
-    'Bot'
-  );
+  return client.user?.username ?? client.user?.globalName ?? client.user?.tag ?? 'Bot';
 }
 
 // ---------- Typing Indicator ----------
@@ -100,13 +84,8 @@ type TypingCapableChannel = Message['channel'] & {
   sendTyping: () => Promise<void>;
 };
 
-function hasTyping(
-  channel: Message['channel'],
-): channel is TypingCapableChannel {
-  return (
-    !!channel &&
-    typeof (channel as TypingCapableChannel).sendTyping === 'function'
-  );
+function hasTyping(channel: Message['channel']): channel is TypingCapableChannel {
+  return !!channel && typeof (channel as TypingCapableChannel).sendTyping === 'function';
 }
 
 function startTypingIndicator(channel: Message['channel']): () => void {
@@ -153,9 +132,7 @@ type SendCapableChannel = Message['channel'] & {
 };
 
 function hasSend(channel: Message['channel']): channel is SendCapableChannel {
-  return (
-    !!channel && typeof (channel as SendCapableChannel).send === 'function'
-  );
+  return !!channel && typeof (channel as SendCapableChannel).send === 'function';
 }
 
 // ---------- Bot Instance Setup ----------
@@ -175,9 +152,7 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
     ? "The assistant is in CLI simulation mode, and responds to the user's CLI commands only with the output of the command."
     : '';
 
-  const prefillCommand = resolved.cliSimMode
-    ? '<cmd>cat untitled.txt</cmd>'
-    : '';
+  const prefillCommand = resolved.cliSimMode ? '<cmd>cat untitled.txt</cmd>' : '';
 
   const aiProvider = createAIProvider({
     provider: resolved.provider,
@@ -191,6 +166,7 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
     openaiModel: resolved.model,
     openaiBaseURL: resolved.openaiBaseUrl || 'https://api.openai.com/v1',
     openaiApiKey: resolved.openaiApiKey || '',
+    supportsImageBlocks: Boolean(botConfig.supportsImageBlocks),
   });
 
   return { config: botConfig, client, aiProvider };
@@ -263,16 +239,15 @@ function setupBotEvents(instance: BotInstance): void {
         );
 
         const replyChunks = chunkReplyText(formattedReplyText);
-        let lastSent: Message | null = null;
         if (replyChunks.length > 0) {
           const [firstChunk, ...restChunks] = replyChunks;
-          lastSent = await message.reply(firstChunk);
+          await message.reply(firstChunk);
 
           for (const chunk of restChunks) {
             if (hasSend(message.channel)) {
-              lastSent = await message.channel.send(chunk);
+              await message.channel.send(chunk);
             } else {
-              lastSent = await message.reply(chunk);
+              await message.reply(chunk);
             }
           }
         }
@@ -306,9 +281,7 @@ async function main(): Promise<void> {
 
   console.log('Starting multi-bot system with configuration:', {
     mainChannelIds:
-      globalConfig.mainChannelIds.length > 0
-        ? globalConfig.mainChannelIds
-        : ['(unset)'],
+      globalConfig.mainChannelIds.length > 0 ? globalConfig.mainChannelIds : ['(unset)'],
     maxContextTokens: globalConfig.maxContextTokens,
     maxTokens: globalConfig.maxTokens,
     temperature: globalConfig.temperature,

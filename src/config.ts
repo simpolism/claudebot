@@ -5,6 +5,7 @@ export interface BotConfig {
   discordToken: string;
   provider: 'anthropic' | 'openai';
   model: string;
+  supportsImageBlocks?: boolean;
 
   // For OpenAI-compatible providers (Groq, etc)
   openaiBaseUrl?: string;
@@ -54,6 +55,7 @@ export const botConfigs: BotConfig[] = [
     model: 'moonshotai/kimi-k2-instruct-0905',
     openaiBaseUrl: 'https://api.groq.com/openai/v1',
     openaiApiKey: process.env.GROQ_API_KEY || '',
+    supportsImageBlocks: true,
   },
 ];
 
@@ -76,8 +78,7 @@ export const activeBotConfigs = botConfigs.filter((config) => {
 export function resolveConfig(botConfig: BotConfig) {
   return {
     ...botConfig,
-    maxContextTokens:
-      botConfig.maxContextTokens ?? globalConfig.maxContextTokens,
+    maxContextTokens: botConfig.maxContextTokens ?? globalConfig.maxContextTokens,
     maxTokens: botConfig.maxTokens ?? globalConfig.maxTokens,
     temperature: botConfig.temperature ?? globalConfig.temperature,
   };

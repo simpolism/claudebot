@@ -1,5 +1,4 @@
 import * as fs from 'fs';
-import * as path from 'path';
 
 // Cached block structure - stores exact text for byte-perfect cache hits
 interface CachedBlock {

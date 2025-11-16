@@ -4,7 +4,7 @@ process.env.GROQ_API_KEY ||= 'test-key';
 process.env.MAIN_CHANNEL_IDS ||= '';
 
 import { describe, expect, it, vi, afterAll, beforeAll } from 'vitest';
-import { ChannelType, type Client } from 'discord.js';
+import { ChannelType, type Client, type Message } from 'discord.js';
 
 type TestFetchedMessage = {
   id: string;
@@ -24,11 +24,12 @@ function createCacheAccess(initial: Record<string, CacheRecord>) {
 
   return {
     cacheAccess: {
-      getCachedBlocks: (channelId: string) =>
-        store.get(channelId)?.blocks ?? [],
-      getLastCachedMessageId: (channelId: string) =>
-        store.get(channelId)?.lastId ?? null,
-      updateCache: (channelId: string, messages: TestFetchedMessage[]) => {
+      getCachedBlocks: (channelId: string) => store.get(channelId)?.blocks ?? [],
+      getLastCachedMessageId: (channelId: string) => store.get(channelId)?.lastId ?? null,
+      updateCache: (
+        channelId: string,
+        messages: Array<{ id: string; formattedText: string; tokens: number }>,
+      ) => {
         updateCalls.push({
           channelId,
           messageIds: messages.map((msg) => msg.id),
@@ -55,7 +56,7 @@ function baseChannel(overrides: Partial<any> = {}) {
     parent: null,
     parentId: null,
     ...overrides,
-  };
+  } as Message['channel'];
 }
 
 const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -189,5 +190,72 @@ describe('buildConversationContext', () => {
       'Alice: Thread message',
       'Bob: Follow-up',
     ]);
+  });
+
+  it('preserves byte-identical cached blocks across multiple turns', async () => {
+    const channelId = 'channel';
+    const existingBlockText = 'Transcript Block\nLine Two';
+    const { cacheAccess } = createCacheAccess({
+      [channelId]: {
+        blocks: [
+          {
+            text: existingBlockText,
+            tokenCount: 5000,
+            lastMessageId: '100',
+          },
+        ],
+        lastId: '100',
+      },
+    });
+
+    const firstFetchMessages: TestFetchedMessage[] = [
+      {
+        id: '105',
+        formattedText: 'Alice: Follow-up',
+        tokens: 12,
+        role: 'user',
+      },
+    ];
+
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(firstFetchMessages)
+      .mockResolvedValueOnce([
+        {
+          id: '110',
+          formattedText: 'Alice: Second turn',
+          tokens: 12,
+          role: 'user',
+        },
+      ]);
+
+    const context = getContextModule();
+
+    const firstConversation = await context.buildConversationContext({
+      channel: baseChannel({ id: channelId }),
+      maxContextTokens: 100000,
+      client: fakeClient,
+      botDisplayName: 'UnitTester',
+      cacheAccess,
+      fetchMessages: fetchSpy,
+    });
+
+    expect(firstConversation.cachedBlocks).toContain(existingBlockText);
+    expect(firstConversation.tail).toHaveLength(1);
+
+    const secondConversation = await context.buildConversationContext({
+      channel: baseChannel({ id: channelId }),
+      maxContextTokens: 100000,
+      client: fakeClient,
+      botDisplayName: 'UnitTester',
+      cacheAccess,
+      fetchMessages: fetchSpy,
+    });
+
+    expect(secondConversation.cachedBlocks).toContain(existingBlockText);
+    expect(
+      secondConversation.cachedBlocks.find((block) => block === existingBlockText),
+    ).toBe(existingBlockText);
+    expect(secondConversation.tail).toHaveLength(1);
   });
 });
