@@ -7,7 +7,13 @@ import type {
   ChatCompletionContentPartText,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions/completions';
-import { ClaudeContentBlock, ImageBlock, SimpleMessage, AIResponse } from './types';
+import {
+  ClaudeContentBlock,
+  ImageBlock,
+  SimpleMessage,
+  AIResponse,
+  ConversationData,
+} from './types';
 
 type ProviderInitOptions = {
   provider: string;
@@ -24,7 +30,7 @@ type ProviderInitOptions = {
 };
 
 type ProviderRequest = {
-  conversation: SimpleMessage[];
+  conversationData: ConversationData;
   botDisplayName: string;
   imageBlocks: ImageBlock[];
 };
@@ -68,7 +74,8 @@ class AnthropicProvider implements AIProvider {
   }
 
   async send(params: ProviderRequest): Promise<AIResponse> {
-    const { conversation, botDisplayName, imageBlocks } = params;
+    const { conversationData, botDisplayName, imageBlocks } = params;
+    const { cachedBlocks, tail } = conversationData;
     const trimmedSystemPrompt = this.systemPrompt.trim();
 
     const systemBlocks = trimmedSystemPrompt
@@ -84,7 +91,9 @@ class AnthropicProvider implements AIProvider {
         ]
       : undefined;
 
-    const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
+    // Build speaker list from both cached blocks and tail
+    const allText = [...cachedBlocks, ...tail.map((m) => m.content)].join('\n');
+    const trackedSpeakers = extractSpeakersFromText(allText, botDisplayName);
     const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
 
     const commandBlocks: ClaudeContentBlock[] = this.prefillCommand
@@ -96,16 +105,38 @@ class AnthropicProvider implements AIProvider {
         ]
       : [];
 
-    const conversationBlocks = buildSegmentedConversationBlocks(
-      conversation,
-      this.maxContextTokens,
-      this.approxCharsPerToken,
-    );
+    // Build conversation blocks with stable caching
+    const conversationBlocks: ClaudeContentBlock[] = [];
+
+    // Cached blocks - these should hit the cache
+    for (const blockText of cachedBlocks) {
+      conversationBlocks.push({
+        type: 'text',
+        text: blockText + '\n',
+        cache_control: {
+          type: 'ephemeral' as const,
+          ttl: '1h' as const,
+        },
+      });
+    }
+
+    // Tail - fresh messages, no cache
+    if (tail.length > 0) {
+      const tailText = tail.map((m) => m.content).join('\n');
+      conversationBlocks.push({
+        type: 'text',
+        text: tailText,
+      });
+    }
+
     if (imageBlocks.length > 0) {
       conversationBlocks.push(...imageBlocks);
     }
 
-    const messagesPayload: { role: 'user' | 'assistant'; content: ClaudeContentBlock[] }[] = [];
+    const messagesPayload: {
+      role: 'user' | 'assistant';
+      content: ClaudeContentBlock[];
+    }[] = [];
 
     if (commandBlocks.length > 0) {
       messagesPayload.push({
@@ -190,9 +221,11 @@ class OpenAIProvider implements AIProvider {
   }
 
   async send(params: ProviderRequest): Promise<AIResponse> {
-    const { conversation, botDisplayName, imageBlocks } = params;
-    const transcriptText = buildTranscript(conversation);
-    const trackedSpeakers = getTrackedUserNames(conversation, botDisplayName);
+    const { conversationData, botDisplayName, imageBlocks } = params;
+    const { cachedBlocks, tail } = conversationData;
+    const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
+    const allText = [...cachedBlocks, ...tail.map((m) => m.content)].join('\n');
+    const trackedSpeakers = extractSpeakersFromText(allText, botDisplayName);
     const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
     const trimmedSystemPrompt = this.systemPrompt.trim();
 
@@ -296,92 +329,15 @@ function finalizeResponse(text: string, guard: FragmentationGuard): AIResponse {
   };
 }
 
-function buildTranscript(conversation: SimpleMessage[]): string {
-  return conversation
-    .map((msg) => msg.content)
-    .join('\n')
-    .trim();
-}
-
-function buildSegmentedConversationBlocks(
-  conversation: SimpleMessage[],
-  maxContextTokens: number,
-  approxCharsPerToken: number,
-): ClaudeContentBlock[] {
-  if (!conversation.length) {
-    return [];
+function buildTranscriptFromData(
+  cachedBlocks: string[],
+  tail: SimpleMessage[],
+): string {
+  const parts: string[] = [...cachedBlocks];
+  if (tail.length > 0) {
+    parts.push(tail.map((m) => m.content).join('\n'));
   }
-
-  const maxSegments = 3;
-  const targetTokensPerSegment = Math.max(
-    1,
-    Math.floor(maxContextTokens / maxSegments),
-  );
-
-  type Segment = { messages: string[]; tokens: number };
-  const segments: Segment[] = [];
-  let totalTokens = 0;
-
-  conversation.forEach((message) => {
-    const text = message.content;
-    const messageTokens = estimateTokensApprox(text, approxCharsPerToken) + 4;
-
-    while (
-      segments.length === maxSegments &&
-      totalTokens + messageTokens > maxContextTokens &&
-      segments[0].messages.length > 0
-    ) {
-      totalTokens -= segments[0].tokens;
-      segments.shift();
-    }
-
-    if (
-      segments.length === 0 ||
-      (segments.length < maxSegments &&
-        segments[segments.length - 1].tokens >= targetTokensPerSegment)
-    ) {
-      segments.push({ messages: [], tokens: 0 });
-    } else if (
-      segments.length === maxSegments &&
-      segments[segments.length - 1].tokens >= targetTokensPerSegment
-    ) {
-      segments.push({ messages: [], tokens: 0 });
-      totalTokens -= segments[0].tokens;
-      segments.shift();
-    }
-
-    if (segments.length === 0) {
-      segments.push({ messages: [], tokens: 0 });
-    }
-
-    const current = segments[segments.length - 1];
-    current.messages.push(text);
-    current.tokens += messageTokens;
-    totalTokens += messageTokens;
-  });
-
-  return segments.map((segment, index) => {
-    const isLast = index === segments.length - 1;
-    const joined = segment.messages.join('\n').trim() || '(empty message)';
-    const block: ClaudeContentBlock = {
-      type: 'text',
-      text: isLast ? joined : `${joined}\n`,
-    };
-    if (!isLast) {
-      block.cache_control = {
-        type: 'ephemeral' as const,
-        ttl: '1h' as const,
-      };
-    }
-    return block;
-  });
-}
-
-function estimateTokensApprox(
-  text: string,
-  approxCharsPerToken: number,
-): number {
-  return Math.ceil(text.length / Math.max(approxCharsPerToken, 1));
+  return parts.join('\n').trim();
 }
 
 function extractOpenAIDelta(chunk: ChatCompletionChunk): string {
@@ -414,27 +370,24 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function extractAuthorName(content: string): string | null {
-  const colonIndex = content.indexOf(':');
-  if (colonIndex === -1) {
-    return null;
-  }
-  return content.slice(0, colonIndex).trim();
-}
-
-function getTrackedUserNames(
-  conversation: SimpleMessage[],
+function extractSpeakersFromText(
+  text: string,
   botDisplayName: string,
 ): string[] {
   const normalizedBot = botDisplayName.toLowerCase();
   const names = new Set<string>();
-  conversation.forEach((message) => {
-    if (message.role !== 'user') return;
-    const authorName = extractAuthorName(message.content);
-    if (!authorName) return;
-    if (authorName.toLowerCase() === normalizedBot) return;
-    names.add(authorName);
-  });
+
+  // Match "Name:" at the start of lines
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const colonIndex = line.indexOf(':');
+    if (colonIndex === -1) continue;
+    const name = line.slice(0, colonIndex).trim();
+    if (!name) continue;
+    if (name.toLowerCase() === normalizedBot) continue;
+    names.add(name);
+  }
+
   return [...names];
 }
 

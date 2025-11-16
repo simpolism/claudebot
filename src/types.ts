@@ -3,6 +3,12 @@ export type SimpleMessage = {
   content: string;
 };
 
+// Structured conversation data for stable prompt caching
+export type ConversationData = {
+  cachedBlocks: string[]; // Pre-formatted text blocks (stable, should be cached)
+  tail: SimpleMessage[]; // Fresh messages not yet cached
+};
+
 export type ImageBlock = {
   type: 'image';
   source: {

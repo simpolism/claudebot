@@ -12,13 +12,19 @@ import {
   PublicThreadChannel,
 } from 'discord.js';
 import { createAIProvider, AIProvider } from './providers';
-import { ImageBlock, SimpleMessage } from './types';
+import { ImageBlock, SimpleMessage, ConversationData } from './types';
 import {
   activeBotConfigs,
   globalConfig,
   resolveConfig,
   BotConfig,
 } from './config';
+import {
+  loadCache,
+  getCachedBlocks,
+  getLastCachedMessageId,
+  updateCache,
+} from './cache';
 
 // ---------- Types ----------
 interface BotInstance {
@@ -165,17 +171,29 @@ function getImageBlocksFromAttachments(
 }
 
 // ---------- Discord Message Fetching ----------
-async function fetchMessagesWithTokenBudget(
+interface FetchedMessage {
+  id: string;
+  formattedText: string;
+  tokens: number;
+  role: 'user' | 'assistant';
+}
+
+// Fetch messages after a given message ID
+async function fetchMessagesAfter(
   channel: Message['channel'],
+  afterMessageId: string | null,
   tokenBudget: number,
   client: Client,
-): Promise<{ messages: SimpleMessage[]; tokensUsed: number }> {
+): Promise<FetchedMessage[]> {
   if (!channel.isTextBased()) {
-    return { messages: [], tokensUsed: 0 };
+    return [];
   }
 
-  const messages: SimpleMessage[] = [];
+  const messages: FetchedMessage[] = [];
   let totalTokens = 0;
+
+  // Fetch all messages we need
+  const allFetched: Message[] = [];
   let lastId: string | undefined;
 
   while (totalTokens < tokenBudget) {
@@ -188,97 +206,137 @@ async function fetchMessagesWithTokenBudget(
       break;
     }
 
+    let reachedCachedMessage = false;
     for (const msg of fetched.values()) {
-      const isAssistant =
-        Boolean(client.user) && msg.author.id === client.user?.id;
-      const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
-      const attachmentSummary = buildAttachmentSummary(msg.attachments);
-      const messageContent = replaceUserMentions(
-        msg.content || '(empty message)',
-        msg,
-        client,
-      );
-      const storedContent = attachmentSummary
-        ? `${messageContent}\n${attachmentSummary}`
-        : messageContent;
-      const authorName = isAssistant
-        ? getBotCanonicalName(client)
-        : getUserCanonicalName(msg);
-
-      const formattedContent = formatAuthoredContent(authorName, storedContent);
-      const messageTokens = estimateTokens(formattedContent) + 4;
-
-      if (totalTokens + messageTokens > tokenBudget) {
+      // If we've reached the last cached message, stop
+      if (afterMessageId && msg.id === afterMessageId) {
+        reachedCachedMessage = true;
         break;
       }
-
-      messages.push({
-        role,
-        content: formattedContent,
-      });
-      totalTokens += messageTokens;
+      allFetched.push(msg);
     }
 
-    if (totalTokens >= tokenBudget) {
+    if (reachedCachedMessage) {
       break;
     }
 
     lastId = fetched.last()?.id;
   }
 
-  messages.reverse();
-  return { messages, tokensUsed: totalTokens };
+  // Process in chronological order (oldest first)
+  allFetched.reverse();
+
+  for (const msg of allFetched) {
+    const isAssistant =
+      Boolean(client.user) && msg.author.id === client.user?.id;
+    const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
+    const attachmentSummary = buildAttachmentSummary(msg.attachments);
+    const messageContent = replaceUserMentions(
+      msg.content || '(empty message)',
+      msg,
+      client,
+    );
+    const storedContent = attachmentSummary
+      ? `${messageContent}\n${attachmentSummary}`
+      : messageContent;
+    const authorName = isAssistant
+      ? getBotCanonicalName(client)
+      : getUserCanonicalName(msg);
+
+    const formattedText = formatAuthoredContent(authorName, storedContent);
+    const tokens = estimateTokens(formattedText) + 4;
+
+    if (totalTokens + tokens > tokenBudget) {
+      break;
+    }
+
+    messages.push({
+      id: msg.id,
+      formattedText,
+      tokens,
+      role,
+    });
+    totalTokens += tokens;
+  }
+
+  return messages;
 }
 
 async function fetchConversationFromDiscord(
   channel: Message['channel'],
   maxContextTokens: number,
   client: Client,
-): Promise<SimpleMessage[]> {
+): Promise<ConversationData> {
   if (!channel.isTextBased()) {
-    return [];
+    return { cachedBlocks: [], tail: [] };
   }
 
-  let parentContext: SimpleMessage[] = [];
-  let parentTokens = 0;
+  const channelId = channel.id;
 
-  if (isThreadChannel(channel) && channel.parent?.isTextBased()) {
-    const parentBudget = Math.floor(maxContextTokens * 0.2);
-    const parentResult = await fetchMessagesWithTokenBudget(
-      channel.parent,
-      parentBudget,
-      client,
-    );
-    parentContext = parentResult.messages;
-    parentTokens = parentResult.tokensUsed;
+  // Get existing cached blocks
+  const existingCachedBlocks = getCachedBlocks(channelId);
+  const lastCachedMessageId = getLastCachedMessageId(channelId);
 
-    if (parentContext.length > 0) {
-      const separatorContent = '--- Thread started ---';
-      const separatorTokens = estimateTokens(separatorContent) + 4;
-      parentContext.push({
-        role: 'user',
-        content: separatorContent,
-      });
-      parentTokens += separatorTokens;
+  // Calculate token budget used by cached blocks
+  const cachedTokens = existingCachedBlocks.reduce(
+    (sum, block) => sum + block.tokenCount,
+    0,
+  );
+  const remainingBudget = maxContextTokens - cachedTokens;
 
-      console.log(
-        `[${getBotCanonicalName(client)}] Fetched ${parentContext.length - 1} parent channel messages (~${parentTokens} tokens)`,
-      );
-    }
-  }
-
-  const remainingBudget = maxContextTokens - parentTokens;
-  const { messages: channelMessages, tokensUsed: channelTokens } =
-    await fetchMessagesWithTokenBudget(channel, remainingBudget, client);
-
-  const totalMessages = [...parentContext, ...channelMessages];
-  const totalTokens = parentTokens + channelTokens;
-
-  console.log(
-    `[${getBotCanonicalName(client)}] Total conversation: ${totalMessages.length} messages (~${totalTokens} tokens)`,
+  // Fetch new messages after the last cached one
+  const newMessages = await fetchMessagesAfter(
+    channel,
+    lastCachedMessageId,
+    remainingBudget,
+    client,
   );
 
-  return totalMessages;
+  // Update cache if we have significant new messages
+  // (This will create new cached blocks if needed)
+  if (newMessages.length > 0) {
+    updateCache(channelId, newMessages);
+  }
+
+  // Get potentially updated cached blocks
+  const finalCachedBlocks = getCachedBlocks(channelId);
+  const finalLastCachedId = getLastCachedMessageId(channelId);
+
+  // Build the tail (messages after the last cached block)
+  const tail: SimpleMessage[] = [];
+  for (const msg of newMessages) {
+    // Only include messages that aren't part of a cached block
+    // Compare as BigInt since Discord snowflakes are numeric
+    if (
+      finalLastCachedId &&
+      BigInt(msg.id) <= BigInt(finalLastCachedId)
+    ) {
+      continue;
+    }
+    tail.push({
+      role: msg.role,
+      content: msg.formattedText,
+    });
+  }
+
+  const cachedBlockTexts = finalCachedBlocks.map((block) => block.text);
+  const totalCachedTokens = finalCachedBlocks.reduce(
+    (sum, block) => sum + block.tokenCount,
+    0,
+  );
+  const tailTokens = tail.reduce(
+    (sum, msg) => sum + estimateTokens(msg.content) + 4,
+    0,
+  );
+
+  console.log(
+    `[${getBotCanonicalName(client)}] Conversation: ${finalCachedBlocks.length} cached blocks (~${totalCachedTokens} tokens) + ${tail.length} tail messages (~${tailTokens} tokens)`,
+  );
+
+  return {
+    cachedBlocks: cachedBlockTexts,
+    tail,
+  };
 }
 
 // ---------- Response Formatting ----------
@@ -464,7 +522,7 @@ function setupBotEvents(instance: BotInstance): void {
       const channelId = message.channel.id;
       const botDisplayName = getBotCanonicalName(client);
 
-      const conversation = await fetchConversationFromDiscord(
+      const conversationData = await fetchConversationFromDiscord(
         message.channel,
         resolved.maxContextTokens,
         client,
@@ -473,7 +531,7 @@ function setupBotEvents(instance: BotInstance): void {
       stopTyping = startTypingIndicator(message.channel);
       const imageBlocks = getImageBlocksFromAttachments(message.attachments);
       const aiReply = await aiProvider.send({
-        conversation,
+        conversationData,
         botDisplayName,
         imageBlocks,
       });
@@ -522,6 +580,9 @@ function setupBotEvents(instance: BotInstance): void {
 
 // ---------- Main ----------
 async function main(): Promise<void> {
+  // Load conversation cache for stable prompt caching
+  loadCache();
+
   console.log('Starting multi-bot system with configuration:', {
     mainChannelId: globalConfig.mainChannelId || '(unset)',
     maxContextTokens: globalConfig.maxContextTokens,
