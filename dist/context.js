@@ -138,11 +138,9 @@ async function buildConversationContext(params) {
     const effectiveAfterId = existingTailState?.lastFetchedId ?? lastCachedMessageId;
     // Calculate token budget used by cached blocks
     const cachedTokens = existingCachedBlocks.reduce((sum, block) => sum + block.tokenCount, 0);
-    const remainingBudget = threadBudget - cachedTokens;
-    // Always fetch at least a small tail even when cached blocks already fill the budget.
-    // The token budget is a soft limit (e.g. 100k within Claude's 200k window) so slight
-    // overflow is acceptable if it keeps the latest uncached messages in view.
-    const fetchBudget = Math.max(remainingBudget, exports.GUARANTEED_TAIL_TOKENS);
+    // Fetch up to the full thread budget every time so we hydrate cached blocks
+    // quickly and keep a deep tail.
+    const fetchBudget = Math.max(threadBudget, exports.GUARANTEED_TAIL_TOKENS);
     console.log(`[${botDisplayName}] Fetching Discord history for ${channelId} after ${effectiveAfterId ?? 'beginning'} with budget ${fetchBudget} tokens`);
     // Fetch new messages after the last cached one
     const newMessages = await fetchMessages(channel, effectiveAfterId, fetchBudget, client);

@@ -258,16 +258,17 @@ describe('buildConversationContext', () => {
     };
 
     const context = getContextModule();
+    const maxContextTokens = 100000;
     const conversation = await context.buildConversationContext({
       channel: baseChannel({ id: channelId }),
-      maxContextTokens: 100000,
+      maxContextTokens,
       client: fakeClient,
       botDisplayName: 'UnitTester',
       cacheAccess,
       fetchMessages,
     });
 
-    expect(capturedBudget).toBe(context.GUARANTEED_TAIL_TOKENS);
+    expect(capturedBudget).toBe(maxContextTokens);
     expect(conversation.tail).toHaveLength(1);
     expect(conversation.tail[0]?.content).toBe('Alice: Hello again');
     expect(conversation.cachedBlocks).toContain(existingBlockText);
