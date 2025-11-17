@@ -62,6 +62,17 @@ function shouldRespond(message: Message, client: Client): boolean {
   // Don't respond to own messages
   if (message.author.id === client.user.id) return false;
 
+  // For bot-to-bot: require explicit @mention in content, not just reply
+  if (message.author.bot) {
+    const mentionPattern = new RegExp(`<@!?${client.user.id}>`);
+    if (!mentionPattern.test(message.content)) {
+      console.log(
+        `[${client.user.username}] Skipping bot message ${message.id} - mentioned via reply only, not explicit tag`,
+      );
+      return false;
+    }
+  }
+
   const channelId = message.channel.id;
   const currentCount = consecutiveBotMessages.get(channelId) || 0;
   if (currentCount >= MAX_CONSECUTIVE_BOT_EXCHANGES) {
