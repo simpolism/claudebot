@@ -16,9 +16,8 @@ const consecutiveBotMessages = new Map();
 const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
 // ---------- Channel Processing Locks ----------
 const processingChannels = new Set();
-const pendingRequests = new Map();
-// Minimum time before a request can be cancelled (ms)
-const MIN_PROCESSING_TIME_BEFORE_RESTART = 100;
+// Queue for pending messages when channel is busy
+const messageQueues = new Map();
 const allowedRootChannels = new Set(config_1.globalConfig.mainChannelIds);
 function isChannelAllowed(channelId) {
     if (allowedRootChannels.size === 0) {
@@ -146,70 +145,48 @@ function setupBotEvents(instance) {
         console.log(`[${config.name}] Logged in as ${c.user.tag}`);
     });
     client.on(discord_js_1.Events.MessageCreate, async (message) => {
-        let stopTyping = null;
-        try {
-            // ALWAYS append messages to in-memory store (for all in-scope messages)
-            if (isInScope(message)) {
-                (0, message_store_1.appendMessage)(message);
-                // Track bot-to-bot exchanges: reset counter on human messages
-                const channelId = message.channel.id;
-                if (!message.author.bot) {
-                    consecutiveBotMessages.set(channelId, 0);
-                }
-                // Note: counter is incremented when bot RESPONDS to another bot, not on every bot message
-            }
-            if (!shouldRespond(message, client))
-                return;
+        // ALWAYS append messages to in-memory store (for all in-scope messages)
+        if (isInScope(message)) {
+            (0, message_store_1.appendMessage)(message);
+            // Track bot-to-bot exchanges: reset counter on human messages
             const channelId = message.channel.id;
-            const botDisplayName = getBotCanonicalName(client);
-            const lockKey = `${client.user?.id}:${channelId}`;
-            // Check for existing request - cancel and restart if new tag comes in
-            if (processingChannels.has(lockKey)) {
-                const pending = pendingRequests.get(lockKey);
-                if (pending) {
-                    const elapsed = Date.now() - pending.startTime;
-                    if (elapsed >= MIN_PROCESSING_TIME_BEFORE_RESTART) {
-                        console.log(`[${config.name}] New tag ${message.id} received while processing ${pending.messageId}, canceling and restarting`);
-                        pending.abortController.abort();
-                        // Wait for the aborted request to clean up
-                        await new Promise((resolve) => setTimeout(resolve, 100));
-                    }
-                    else {
-                        console.log(`[${config.name}] Already processing ${channelId}, too early to restart`);
-                        return;
-                    }
-                }
-                else {
-                    console.log(`[${config.name}] Already processing ${channelId}, skipping duplicate`);
-                    return;
-                }
+            if (!message.author.bot) {
+                consecutiveBotMessages.set(channelId, 0);
             }
-            processingChannels.add(lockKey);
-            const abortController = new AbortController();
+            // Note: counter is incremented when bot RESPONDS to another bot, not on every bot message
+        }
+        if (!shouldRespond(message, client))
+            return;
+        const channelId = message.channel.id;
+        const lockKey = `${client.user?.id}:${channelId}`;
+        // Queue message if already processing
+        if (processingChannels.has(lockKey)) {
+            if (!messageQueues.has(lockKey)) {
+                messageQueues.set(lockKey, []);
+            }
+            messageQueues.get(lockKey).push(message);
+            console.log(`[${config.name}] Queued message ${message.id} in ${channelId} (queue size: ${messageQueues.get(lockKey).length})`);
+            return;
+        }
+        processingChannels.add(lockKey);
+        // Process this message and any queued messages
+        const processMessage = async (msg) => {
+            let stopTyping = null;
             const receiveTime = Date.now();
-            pendingRequests.set(lockKey, {
-                abortController,
-                messageId: message.id,
-                startTime: receiveTime,
-            });
-            console.log(`[${config.name}] Received mention ${message.id} in ${channelId} at ${new Date(receiveTime).toISOString()}`);
+            const botDisplayName = getBotCanonicalName(client);
+            console.log(`[${config.name}] Processing mention ${msg.id} in ${channelId} at ${new Date(receiveTime).toISOString()}`);
             try {
                 const contextStart = Date.now();
                 const conversationData = (0, context_1.buildConversationContext)({
-                    channel: message.channel,
+                    channel: msg.channel,
                     maxContextTokens: resolved.maxContextTokens,
                     client,
                     botDisplayName,
                 });
                 const contextDuration = Date.now() - contextStart;
-                console.log(`[${config.name}] Context built for ${message.id} in ${contextDuration}ms`);
-                // Check if aborted before making expensive API call
-                if (abortController.signal.aborted) {
-                    console.log(`[${config.name}] Request ${message.id} aborted before provider call`);
-                    return;
-                }
-                stopTyping = startTypingIndicator(message.channel);
-                const imageBlocks = (0, context_1.getImageBlocksFromAttachments)(message.attachments);
+                console.log(`[${config.name}] Context built for ${msg.id} in ${contextDuration}ms`);
+                stopTyping = startTypingIndicator(msg.channel);
+                const imageBlocks = (0, context_1.getImageBlocksFromAttachments)(msg.attachments);
                 const otherSpeakers = (0, context_1.getChannelSpeakers)(channelId, client.user?.id);
                 const guardSpeakers = Array.from(new Set([...otherSpeakers, botDisplayName])); // Include bot name so guard catches self fragments
                 const providerStart = Date.now();
@@ -219,17 +196,12 @@ function setupBotEvents(instance) {
                     imageBlocks,
                     otherSpeakers: guardSpeakers,
                 });
-                // Check if aborted after API call (second tag came in during processing)
-                if (abortController.signal.aborted) {
-                    console.log(`[${config.name}] Request ${message.id} aborted after provider call, discarding response`);
-                    return;
-                }
                 const providerDuration = Date.now() - providerStart;
-                console.log(`[${config.name}] Provider responded for ${message.id} in ${providerDuration}ms`);
+                console.log(`[${config.name}] Provider responded for ${msg.id} in ${providerDuration}ms`);
                 const replyText = aiReply.text;
                 stopTyping();
                 stopTyping = null;
-                const formattedReplyText = (0, discord_utils_1.convertOutputMentions)(replyText, message.channel, client);
+                const formattedReplyText = (0, discord_utils_1.convertOutputMentions)(replyText, msg.channel, client);
                 const replyChunks = (0, discord_utils_1.chunkReplyText)(formattedReplyText);
                 const sentMessages = [];
                 // Handle image attachment if present
@@ -242,7 +214,7 @@ function setupBotEvents(instance) {
                     const [firstChunk, ...restChunks] = replyChunks;
                     if (restChunks.length === 0) {
                         // Single chunk - attach image here if present
-                        const firstSent = await message.reply({
+                        const firstSent = await msg.reply({
                             content: firstChunk,
                             files: imageAttachment ? [imageAttachment] : undefined,
                         });
@@ -250,19 +222,19 @@ function setupBotEvents(instance) {
                     }
                     else {
                         // Multiple chunks - image goes on last chunk
-                        const firstSent = await message.reply(firstChunk);
+                        const firstSent = await msg.reply(firstChunk);
                         sentMessages.push(firstSent);
                         for (let i = 0; i < restChunks.length; i++) {
                             const chunk = restChunks[i];
                             const isLastChunk = i === restChunks.length - 1;
                             // Attach image to last message if present
                             const files = isLastChunk && imageAttachment ? [imageAttachment] : undefined;
-                            if (hasSend(message.channel)) {
-                                const sent = await message.channel.send({ content: chunk, files });
+                            if (hasSend(msg.channel)) {
+                                const sent = await msg.channel.send({ content: chunk, files });
                                 sentMessages.push(sent);
                             }
                             else {
-                                const sent = await message.reply({ content: chunk, files });
+                                const sent = await msg.reply({ content: chunk, files });
                                 sentMessages.push(sent);
                             }
                         }
@@ -270,7 +242,7 @@ function setupBotEvents(instance) {
                 }
                 else if (imageAttachment) {
                     // Image only, no text
-                    const firstSent = await message.reply({
+                    const firstSent = await msg.reply({
                         content: '',
                         files: [imageAttachment],
                     });
@@ -304,30 +276,40 @@ function setupBotEvents(instance) {
                     (0, message_store_1.appendStoredMessage)(stored);
                 }
                 // Track bot-to-bot exchange: increment counter if we responded to another bot
-                if (message.author.bot) {
+                if (msg.author.bot) {
                     const current = consecutiveBotMessages.get(channelId) || 0;
                     consecutiveBotMessages.set(channelId, current + 1);
                     console.log(`[${config.name}] Bot-to-bot exchange count: ${current + 1}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`);
                 }
                 const totalDuration = Date.now() - receiveTime;
-                console.log(`[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'}) in ${totalDuration}ms`);
+                console.log(`[${config.name}] Replied in channel ${channelId} to ${msg.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'}) in ${totalDuration}ms`);
+            }
+            catch (err) {
+                console.error(`[${config.name}] Error handling message ${msg.id}:`, err);
+                try {
+                    await msg.reply('Sorry, I hit an error. Check the bot logs.');
+                }
+                catch {
+                    // ignore
+                }
             }
             finally {
-                processingChannels.delete(lockKey);
-                pendingRequests.delete(lockKey);
+                stopTyping?.();
             }
-        }
-        catch (err) {
-            console.error(`[${config.name}] Error handling message:`, err);
-            try {
-                await message.reply('Sorry, I hit an error. Check the bot logs.');
-            }
-            catch {
-                // ignore
+        };
+        try {
+            // Process current message
+            await processMessage(message);
+            // Process any queued messages
+            while (messageQueues.has(lockKey) && messageQueues.get(lockKey).length > 0) {
+                const nextMessage = messageQueues.get(lockKey).shift();
+                console.log(`[${config.name}] Processing queued message ${nextMessage.id} (${messageQueues.get(lockKey).length} remaining)`);
+                await processMessage(nextMessage);
             }
         }
         finally {
-            stopTyping?.();
+            processingChannels.delete(lockKey);
+            messageQueues.delete(lockKey);
         }
     });
 }

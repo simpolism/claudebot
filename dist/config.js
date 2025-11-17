@@ -1,9 +1,44 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activeBotConfigs = exports.botConfigs = exports.globalConfig = void 0;
 exports.resolveConfig = resolveConfig;
 exports.getMaxBotContextTokens = getMaxBotContextTokens;
 require("dotenv/config");
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
 // Global configuration shared across all bots
 function parseMainChannelIds() {
     const raw = process.env.MAIN_CHANNEL_IDS || '';
@@ -21,39 +56,39 @@ exports.globalConfig = {
     approxCharsPerToken: parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4'),
     discordMessageLimit: 2000,
 };
-// Bot configurations - add your bots here
-exports.botConfigs = [
-    {
-        name: 'Haiku4.5',
-        discordToken: process.env.HAIKU_DISCORD_TOKEN || '',
-        provider: 'anthropic',
-        model: 'claude-haiku-4-5',
-    },
-    {
-        name: 'CL-KU',
-        discordToken: process.env.CLKU_DISCORD_TOKEN || '',
-        provider: 'anthropic',
-        model: 'claude-3-5-haiku-latest',
-    },
-    {
-        name: 'K2',
-        discordToken: process.env.KIMI_DISCORD_TOKEN || '',
-        provider: 'openai',
-        model: 'moonshotai/kimi-k2-instruct-0905',
-        openaiBaseUrl: 'https://api.groq.com/openai/v1',
-        openaiApiKey: process.env.GROQ_API_KEY || '',
-    },
-    {
-        name: 'gemflash',
-        discordToken: process.env.NANOBANANA_DISCORD_TOKEN || '',
-        provider: 'gemini',
-        model: 'gemini-2.5-flash-image',
-        geminiApiKey: process.env.GOOGLE_API_KEY || '',
-        geminiOutputMode: 'both',
-        maxContextTokens: 30000,
-        systemPrompt: 'You are an image-generating AI assistant. When users request images, drawings, or visual content, you MUST generate an actual image - do not just describe it. Always include a generated image when the context calls for visual output.',
-    },
-];
+// Load bot configurations from JSON file
+function loadBotConfigsFromJSON() {
+    const configPath = path.join(process.cwd(), 'bots.json');
+    if (!fs.existsSync(configPath)) {
+        console.warn(`No bots.json found at ${configPath}, using empty config`);
+        return [];
+    }
+    try {
+        const jsonContent = fs.readFileSync(configPath, 'utf-8');
+        const jsonConfigs = JSON.parse(jsonContent);
+        return jsonConfigs.map((jsonConfig) => ({
+            name: jsonConfig.name,
+            discordToken: process.env[jsonConfig.discordTokenEnv] || '',
+            provider: jsonConfig.provider,
+            model: jsonConfig.model,
+            supportsImageBlocks: jsonConfig.supportsImageBlocks,
+            openaiBaseUrl: jsonConfig.openaiBaseUrl,
+            openaiApiKey: jsonConfig.openaiApiKeyEnv ? process.env[jsonConfig.openaiApiKeyEnv] || '' : undefined,
+            geminiApiKey: jsonConfig.geminiApiKeyEnv ? process.env[jsonConfig.geminiApiKeyEnv] || '' : undefined,
+            geminiOutputMode: jsonConfig.geminiOutputMode,
+            maxContextTokens: jsonConfig.maxContextTokens,
+            maxTokens: jsonConfig.maxTokens,
+            temperature: jsonConfig.temperature,
+            systemPrompt: jsonConfig.systemPrompt,
+            cliSimMode: jsonConfig.cliSimMode,
+        }));
+    }
+    catch (err) {
+        console.error(`Failed to load bots.json:`, err);
+        return [];
+    }
+}
+exports.botConfigs = loadBotConfigsFromJSON();
 // Filter out bots without tokens (allows partial configuration)
 exports.activeBotConfigs = exports.botConfigs.filter((config) => {
     if (!config.discordToken) {

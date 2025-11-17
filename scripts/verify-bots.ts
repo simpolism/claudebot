@@ -1,21 +1,31 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
-import { botConfigs } from '../src/config';
+import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
+import { botConfigs, BotConfig } from '../src/config';
 
 interface VerificationResult {
   name: string;
+  discordSuccess: boolean;
+  discordUsername?: string;
+  discordError?: string;
+  discordDuration: number;
+  apiSuccess: boolean;
+  apiError?: string;
+  apiDuration: number;
+}
+
+async function verifyDiscord(config: BotConfig): Promise<{
   success: boolean;
   username?: string;
   error?: string;
   duration: number;
-}
-
-async function verifyBot(config: { name: string; discordToken: string }): Promise<VerificationResult> {
+}> {
   const start = Date.now();
 
   if (!config.discordToken) {
     return {
-      name: config.name,
       success: false,
       error: 'No Discord token configured',
       duration: Date.now() - start,
@@ -30,7 +40,6 @@ async function verifyBot(config: { name: string; discordToken: string }): Promis
     const timeout = setTimeout(() => {
       client.destroy();
       resolve({
-        name: config.name,
         success: false,
         error: 'Connection timeout (10s)',
         duration: Date.now() - start,
@@ -40,7 +49,6 @@ async function verifyBot(config: { name: string; discordToken: string }): Promis
     client.once('ready', (c) => {
       clearTimeout(timeout);
       const result = {
-        name: config.name,
         success: true,
         username: c.user.tag,
         duration: Date.now() - start,
@@ -53,7 +61,6 @@ async function verifyBot(config: { name: string; discordToken: string }): Promis
       clearTimeout(timeout);
       client.destroy();
       resolve({
-        name: config.name,
         success: false,
         error: err.message,
         duration: Date.now() - start,
@@ -64,13 +71,92 @@ async function verifyBot(config: { name: string; discordToken: string }): Promis
       clearTimeout(timeout);
       client.destroy();
       resolve({
-        name: config.name,
         success: false,
         error: err.message || 'Login failed',
         duration: Date.now() - start,
       });
     });
   });
+}
+
+async function verifyAnthropicAPI(): Promise<{ success: boolean; error?: string; duration: number }> {
+  const start = Date.now();
+  try {
+    const client = new Anthropic();
+    // Use a minimal message to verify API key works
+    await client.messages.create({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    return { success: true, duration: Date.now() - start };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return { success: false, error: message, duration: Date.now() - start };
+  }
+}
+
+async function verifyOpenAIAPI(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+): Promise<{ success: boolean; error?: string; duration: number }> {
+  const start = Date.now();
+  try {
+    const client = new OpenAI({
+      baseURL: baseUrl,
+      apiKey: apiKey,
+    });
+    // Use a minimal completion to verify API key works
+    await client.chat.completions.create({
+      model: model,
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    return { success: true, duration: Date.now() - start };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return { success: false, error: message, duration: Date.now() - start };
+  }
+}
+
+async function verifyGeminiAPI(apiKey: string): Promise<{ success: boolean; error?: string; duration: number }> {
+  const start = Date.now();
+  try {
+    const genai = new GoogleGenAI({ apiKey });
+    // List models to verify API key works (cheaper than generating)
+    await genai.models.list();
+    return { success: true, duration: Date.now() - start };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return { success: false, error: message, duration: Date.now() - start };
+  }
+}
+
+async function verifyAPI(config: BotConfig): Promise<{ success: boolean; error?: string; duration: number }> {
+  switch (config.provider) {
+    case 'anthropic':
+      return verifyAnthropicAPI();
+
+    case 'openai':
+      if (!config.openaiApiKey) {
+        return { success: false, error: 'No OpenAI API key configured', duration: 0 };
+      }
+      return verifyOpenAIAPI(
+        config.openaiBaseUrl || 'https://api.openai.com/v1',
+        config.openaiApiKey,
+        config.model,
+      );
+
+    case 'gemini':
+      if (!config.geminiApiKey) {
+        return { success: false, error: 'No Gemini API key configured', duration: 0 };
+      }
+      return verifyGeminiAPI(config.geminiApiKey);
+
+    default:
+      return { success: false, error: `Unknown provider: ${config.provider}`, duration: 0 };
+  }
 }
 
 async function main(): Promise<void> {
@@ -85,32 +171,63 @@ async function main(): Promise<void> {
 
   // Verify bots sequentially to avoid rate limiting
   for (const config of botConfigs) {
-    process.stdout.write(`  ${config.name}... `);
-    const result = await verifyBot(config);
-    results.push(result);
+    console.log(`${config.name}:`);
 
-    if (result.success) {
-      console.log(`OK (${result.username}) [${result.duration}ms]`);
+    // Verify Discord
+    process.stdout.write(`  Discord... `);
+    const discordResult = await verifyDiscord(config);
+    if (discordResult.success) {
+      console.log(`OK (${discordResult.username}) [${discordResult.duration}ms]`);
     } else {
-      console.log(`FAILED: ${result.error} [${result.duration}ms]`);
+      console.log(`FAILED: ${discordResult.error} [${discordResult.duration}ms]`);
     }
+
+    // Verify API
+    process.stdout.write(`  ${config.provider} API... `);
+    const apiResult = await verifyAPI(config);
+    if (apiResult.success) {
+      console.log(`OK [${apiResult.duration}ms]`);
+    } else {
+      console.log(`FAILED: ${apiResult.error} [${apiResult.duration}ms]`);
+    }
+
+    results.push({
+      name: config.name,
+      discordSuccess: discordResult.success,
+      discordUsername: discordResult.username,
+      discordError: discordResult.error,
+      discordDuration: discordResult.duration,
+      apiSuccess: apiResult.success,
+      apiError: apiResult.error,
+      apiDuration: apiResult.duration,
+    });
+
+    console.log('');
   }
 
-  console.log('\n--- Summary ---');
-  const successful = results.filter((r) => r.success).length;
-  const failed = results.filter((r) => !r.success).length;
+  console.log('--- Summary ---');
+  const fullySuccessful = results.filter((r) => r.discordSuccess && r.apiSuccess).length;
+  const discordFailed = results.filter((r) => !r.discordSuccess).length;
+  const apiFailed = results.filter((r) => !r.apiSuccess).length;
 
   console.log(`Total: ${results.length}`);
-  console.log(`Success: ${successful}`);
-  console.log(`Failed: ${failed}`);
+  console.log(`Fully operational: ${fullySuccessful}`);
+  console.log(`Discord failures: ${discordFailed}`);
+  console.log(`API failures: ${apiFailed}`);
 
-  if (failed > 0) {
-    console.log('\nFailed bots:');
-    results
-      .filter((r) => !r.success)
-      .forEach((r) => {
-        console.log(`  - ${r.name}: ${r.error}`);
-      });
+  const hasFailures = discordFailed > 0 || apiFailed > 0;
+
+  if (hasFailures) {
+    console.log('\nIssues:');
+    results.forEach((r) => {
+      const issues: string[] = [];
+      if (!r.discordSuccess) issues.push(`Discord: ${r.discordError}`);
+      if (!r.apiSuccess) issues.push(`API: ${r.apiError}`);
+      if (issues.length > 0) {
+        console.log(`  ${r.name}:`);
+        issues.forEach((issue) => console.log(`    - ${issue}`));
+      }
+    });
     process.exit(1);
   }
 

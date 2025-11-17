@@ -2,3 +2,4 @@ dist
 node_modules
 conversation-cache.json
 .env
+bots.*json
