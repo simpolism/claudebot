@@ -41,6 +41,9 @@ const DEBUG_PORT = parseInt(process.env.DEBUG_PORT || '3847', 10);
 function estimateTokens(text) {
     return Math.ceil(text.length / Math.max(config_1.globalConfig.approxCharsPerToken, 1));
 }
+function estimateMessageTokens(authorName, content) {
+    return estimateTokens(`${authorName}: ${content}`) + 4;
+}
 function getChannelDebugInfo(channelId) {
     const messages = (0, message_store_1.getChannelMessages)(channelId);
     const boundaries = (0, message_store_1.getBlockBoundaries)(channelId);
@@ -74,7 +77,7 @@ function getChannelDebugInfo(channelId) {
     const tailMessages = messages.slice(tailStartIdx);
     let tailTokens = 0;
     for (const msg of tailMessages) {
-        tailTokens += estimateTokens(`${msg.authorName}: ${msg.content}`) + 4;
+        tailTokens += estimateMessageTokens(msg.authorName, msg.content);
     }
     const recentTail = tailMessages.slice(-10).map((msg) => ({
         id: msg.id,
