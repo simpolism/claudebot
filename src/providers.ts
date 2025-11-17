@@ -6,6 +6,7 @@ import type {
   ChatCompletionContentPart,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions/completions';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import {
   ClaudeContentBlock,
   ImageBlock,
@@ -27,6 +28,9 @@ type ProviderInitOptions = {
   openaiBaseURL: string;
   openaiApiKey: string;
   supportsImageBlocks: boolean;
+  geminiModel: string;
+  geminiApiKey: string;
+  geminiOutputMode: 'text' | 'image' | 'both';
 };
 
 type ProviderRequest = {
@@ -44,6 +48,9 @@ export function createAIProvider(options: ProviderInitOptions): AIProvider {
   const normalized = options.provider.toLowerCase();
   if (normalized === 'openai') {
     return new OpenAIProvider(options);
+  }
+  if (normalized === 'gemini') {
+    return new GeminiProvider(options);
   }
   return new AnthropicProvider(options);
 }
@@ -312,6 +319,84 @@ class OpenAIProvider implements AIProvider {
     }
 
     return finalizeResponse(aggregatedText, guard);
+  }
+}
+
+class GeminiProvider implements AIProvider {
+  private client: GoogleGenerativeAI;
+  private systemPrompt: string;
+  private model: string;
+  private outputMode: 'text' | 'image' | 'both';
+
+  constructor(options: ProviderInitOptions) {
+    const apiKey = options.geminiApiKey;
+    if (!apiKey) {
+      throw new Error('Missing GOOGLE_API_KEY for Gemini provider.');
+    }
+    this.systemPrompt = options.systemPrompt;
+    this.model = options.geminiModel;
+    this.outputMode = options.geminiOutputMode || 'both';
+    this.client = new GoogleGenerativeAI(apiKey);
+  }
+
+  async send(params: ProviderRequest): Promise<AIResponse> {
+    const { conversationData, botDisplayName, otherSpeakers } = params;
+    const { cachedBlocks, tail } = conversationData;
+    const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
+    const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
+
+    // Build the prompt - include system prompt if present
+    let fullPrompt = '';
+    const trimmedSystemPrompt = this.systemPrompt.trim();
+    if (trimmedSystemPrompt) {
+      fullPrompt += `System: ${trimmedSystemPrompt}\n\n`;
+    }
+    fullPrompt += `Here is the conversation so far:\n\n${transcriptText}\n\n`;
+    fullPrompt += `You are ${botDisplayName}. Please respond to the conversation above.`;
+
+    // Configure response modalities based on output mode
+    const responseModalities: Array<'Text' | 'Image'> =
+      this.outputMode === 'image' ? ['Image'] : this.outputMode === 'text' ? ['Text'] : ['Text', 'Image'];
+
+    const generativeModel = this.client.getGenerativeModel({
+      model: this.model,
+      generationConfig: {
+        responseModalities,
+      } as any, // Type definition may not include responseModalities yet
+    });
+
+    const result = await generativeModel.generateContent(fullPrompt);
+    const response = result.response;
+
+    // Extract text and image from response parts
+    let textContent = '';
+    let imageData: Buffer | undefined;
+
+    for (const candidate of response.candidates || []) {
+      for (const part of candidate.content?.parts || []) {
+        if ('text' in part && part.text) {
+          textContent += part.text;
+        }
+        if ('inlineData' in part && part.inlineData) {
+          // Convert base64 to Buffer
+          imageData = Buffer.from(part.inlineData.data, 'base64');
+        }
+      }
+    }
+
+    // Apply fragmentation guard to text (if any)
+    if (textContent) {
+      textContent = guard.inspect(textContent);
+    }
+
+    const finalText = textContent.trim() || (imageData ? '[Generated image]' : '(no response)');
+
+    return {
+      text: finalText,
+      imageData,
+      truncated: guard.truncated,
+      truncatedSpeaker: guard.truncatedSpeaker,
+    };
   }
 }
 

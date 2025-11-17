@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Client, Events, GatewayIntentBits, Message, Partials } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Message, Partials, AttachmentBuilder } from 'discord.js';
 import { createAIProvider, AIProvider } from './providers';
 import { activeBotConfigs, globalConfig, resolveConfig, BotConfig } from './config';
 import { loadBoundariesFromDisk, loadHistoryFromDiscord, appendMessage, appendStoredMessage, StoredMessage } from './message-store';
@@ -151,6 +151,9 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
     openaiBaseURL: resolved.openaiBaseUrl || 'https://api.openai.com/v1',
     openaiApiKey: resolved.openaiApiKey || '',
     supportsImageBlocks: Boolean(botConfig.supportsImageBlocks),
+    geminiModel: resolved.model,
+    geminiApiKey: resolved.geminiApiKey || '',
+    geminiOutputMode: resolved.geminiOutputMode || 'both',
   });
 
   return { config: botConfig, client, aiProvider };
@@ -233,9 +236,19 @@ function setupBotEvents(instance: BotInstance): void {
 
         const replyChunks = chunkReplyText(formattedReplyText);
         const sentMessages: Message[] = [];
+
+        // Handle image attachment if present
+        const imageAttachment = aiReply.imageData
+          ? new AttachmentBuilder(aiReply.imageData, { name: 'generated.png' })
+          : undefined;
+
         if (replyChunks.length > 0) {
           const [firstChunk, ...restChunks] = replyChunks;
-          const firstSent = await message.reply(firstChunk);
+          // Attach image to first message if present
+          const firstSent = await message.reply({
+            content: firstChunk,
+            files: imageAttachment ? [imageAttachment] : undefined,
+          });
           sentMessages.push(firstSent);
 
           for (const chunk of restChunks) {
@@ -247,6 +260,13 @@ function setupBotEvents(instance: BotInstance): void {
               sentMessages.push(sent);
             }
           }
+        } else if (imageAttachment) {
+          // Image only, no text
+          const firstSent = await message.reply({
+            content: '',
+            files: [imageAttachment],
+          });
+          sentMessages.push(firstSent);
         }
 
         // Append bot's own replies to the message store

@@ -3,13 +3,17 @@ import 'dotenv/config';
 export interface BotConfig {
   name: string;
   discordToken: string;
-  provider: 'anthropic' | 'openai';
+  provider: 'anthropic' | 'openai' | 'gemini';
   model: string;
   supportsImageBlocks?: boolean;
 
   // For OpenAI-compatible providers (Groq, etc)
   openaiBaseUrl?: string;
   openaiApiKey?: string;
+
+  // For Gemini provider
+  geminiApiKey?: string;
+  geminiOutputMode?: 'text' | 'image' | 'both';
 
   // Per-bot overrides (uses global defaults if not specified)
   maxContextTokens?: number;
@@ -56,6 +60,14 @@ export const botConfigs: BotConfig[] = [
     openaiBaseUrl: 'https://api.groq.com/openai/v1',
     openaiApiKey: process.env.GROQ_API_KEY || '',
   },
+  {
+    name: 'gemflash',
+    discordToken: process.env.NANOBANANA_DISCORD_TOKEN || '',
+    provider: 'gemini',
+    model: 'gemini-2.5-flash-image',
+    geminiApiKey: process.env.GOOGLE_API_KEY || '',
+    geminiOutputMode: 'both', // Can generate both text and images
+  },
 ];
 
 // Filter out bots without tokens (allows partial configuration)
@@ -70,6 +82,12 @@ export const activeBotConfigs = botConfigs.filter((config) => {
     );
     return false;
   }
+  if (config.provider === 'gemini' && !config.geminiApiKey) {
+    console.warn(
+      `Bot "${config.name}" uses Gemini provider but has no API key, skipping`,
+    );
+    return false;
+  }
   return true;
 });
 
@@ -80,5 +98,7 @@ export function resolveConfig(botConfig: BotConfig) {
     maxContextTokens: botConfig.maxContextTokens ?? globalConfig.maxContextTokens,
     maxTokens: botConfig.maxTokens ?? globalConfig.maxTokens,
     temperature: botConfig.temperature ?? globalConfig.temperature,
+    geminiApiKey: botConfig.geminiApiKey ?? '',
+    geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
   };
 }

@@ -30,6 +30,7 @@ export type ClaudeContentBlock = TextBlock | ImageBlock;
 
 export type AIResponse = {
   text: string;
+  imageData?: Buffer; // For image generation (Gemini)
   truncated: boolean;
   truncatedSpeaker?: string;
 };
