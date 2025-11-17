@@ -1,6 +1,7 @@
 import { Client, Message, Collection } from 'discord.js';
 import * as fs from 'fs';
 import { globalConfig, getMaxBotContextTokens } from './config';
+import * as db from './database';
 
 // ---------- Types ----------
 
@@ -81,6 +82,17 @@ function messageToStored(message: Message): StoredMessage {
   };
 }
 
+function storedMessageToDbMessage(stored: StoredMessage): db.StoredMessage {
+  // For now, we don't have thread support in the in-memory system
+  // So threadId is always null and parentChannelId = channelId
+  return {
+    ...stored,
+    threadId: null,
+    parentChannelId: stored.channelId,
+    createdAt: Date.now(),
+  };
+}
+
 // ---------- Message Management ----------
 
 export function appendStoredMessage(stored: StoredMessage): void {
@@ -96,6 +108,16 @@ export function appendStoredMessage(stored: StoredMessage): void {
 
   messageIds.add(stored.id);
   messagesByChannel.get(channelId)!.push(stored);
+
+  // Write to database in parallel if feature flag enabled
+  if (globalConfig.useDatabaseStorage) {
+    try {
+      db.insertMessage(storedMessageToDbMessage(stored));
+    } catch (err) {
+      console.error('[Database] Failed to insert message:', err);
+    }
+  }
+
   checkAndFreezeBlocks(channelId);
 }
 
@@ -377,11 +399,29 @@ function freezeBlocks(channelId: string, options: FreezeOptions = {}): number {
       const firstMsg = messages[blockStartIdx];
       const lastMsg = messages[i];
       if (firstMsg && lastMsg) {
-        boundaries.push({
+        const boundary: BlockBoundary = {
           firstMessageId: firstMsg.id,
           lastMessageId: lastMsg.id,
           tokenCount: accumulatedTokens,
-        });
+        };
+        boundaries.push(boundary);
+
+        // Write to database in parallel if feature flag enabled
+        if (globalConfig.useDatabaseStorage) {
+          try {
+            db.insertBlockBoundary({
+              channelId,
+              threadId: null, // No thread support yet
+              firstMessageId: boundary.firstMessageId,
+              lastMessageId: boundary.lastMessageId,
+              tokenCount: boundary.tokenCount,
+              createdAt: Date.now(),
+            });
+          } catch (err) {
+            console.error('[Database] Failed to insert block boundary:', err);
+          }
+        }
+
         blocksCreated++;
 
         if (verbose) {
@@ -501,6 +541,17 @@ export async function loadHistoryFromDiscord(
       messageIdsByChannel.set(channelId, new Set(messages.map((m) => m.id)));
       if (!blockBoundaries.has(channelId)) {
         blockBoundaries.set(channelId, []);
+      }
+
+      // Batch insert to database if feature flag enabled
+      if (globalConfig.useDatabaseStorage && messages.length > 0) {
+        try {
+          const dbMessages = messages.map((m) => storedMessageToDbMessage(m));
+          db.insertMessages(dbMessages);
+          console.log(`[Database] Inserted ${messages.length} messages for ${channelId}`);
+        } catch (err) {
+          console.error('[Database] Failed to batch insert messages:', err);
+        }
       }
 
       // Rebuild blocks according to saved boundaries

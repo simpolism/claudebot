@@ -6,6 +6,7 @@ import { loadBoundariesFromDisk, loadHistoryFromDiscord, appendMessage, appendSt
 import { buildConversationContext, getImageBlocksFromAttachments, getChannelSpeakers } from './context';
 import { chunkReplyText, convertOutputMentions } from './discord-utils';
 import { startDebugServer } from './debug-server';
+import { initializeDatabase, closeDatabase, getDatabaseStats } from './database';
 
 // ---------- Types ----------
 export interface BotInstance {
@@ -394,6 +395,14 @@ async function main(): Promise<void> {
   // Start debug server for inspecting in-memory state
   startDebugServer();
 
+  // Initialize database if feature flag is enabled
+  if (globalConfig.useDatabaseStorage) {
+    console.log('[Database] Initializing SQLite storage (USE_DATABASE_STORAGE=true)');
+    initializeDatabase();
+    const stats = getDatabaseStats();
+    console.log('[Database] Current state:', stats);
+  }
+
   // Load block boundaries from disk (for Anthropic cache consistency)
   loadBoundariesFromDisk();
 
@@ -460,4 +469,21 @@ async function main(): Promise<void> {
 main().catch((err) => {
   console.error('Fatal error:', err);
   process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\nReceived SIGINT, shutting down gracefully...');
+  if (globalConfig.useDatabaseStorage) {
+    closeDatabase();
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\nReceived SIGTERM, shutting down gracefully...');
+  if (globalConfig.useDatabaseStorage) {
+    closeDatabase();
+  }
+  process.exit(0);
 });
