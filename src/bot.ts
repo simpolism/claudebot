@@ -212,12 +212,15 @@ function setupBotEvents(instance: BotInstance): void {
         stopTyping = startTypingIndicator(message.channel);
         const imageBlocks = getImageBlocksFromAttachments(message.attachments);
         const otherSpeakers = getChannelSpeakers(channelId, client.user?.id);
+        const guardSpeakers = Array.from(
+          new Set([...otherSpeakers, botDisplayName]),
+        ); // Include bot name so guard catches self fragments
         const providerStart = Date.now();
         const aiReply = await aiProvider.send({
           conversationData,
           botDisplayName,
           imageBlocks,
-          otherSpeakers,
+          otherSpeakers: guardSpeakers,
         });
         const providerDuration = Date.now() - providerStart;
         console.log(`[${config.name}] Provider responded for ${message.id} in ${providerDuration}ms`);

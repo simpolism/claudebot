@@ -127,4 +127,63 @@ describe('OpenAIProvider message layout', () => {
       content: 'Bot:',
     });
   });
+
+  it('truncates when completion restarts the bot speaker mid-response', async () => {
+    const abortSpy = vi.fn();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    createMock.mockResolvedValue({
+      controller: {
+        abort: abortSpy,
+      },
+      async *[Symbol.asyncIterator]() {
+        yield {
+          ...fakeChunk,
+          choices: [
+            {
+              index: 0,
+              finish_reason: null,
+              delta: {
+                content: 'First thought\nBot: continuing again',
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    const { createAIProvider } = await import('../src/providers');
+    const provider = createAIProvider({
+      provider: 'openai',
+      systemPrompt: '',
+      prefillCommand: '',
+      temperature: 0,
+      maxTokens: 256,
+      maxContextTokens: 1000,
+      approxCharsPerToken: 4,
+      anthropicModel: '',
+      openaiModel: 'test-model',
+      openaiBaseURL: '',
+      openaiApiKey: 'key',
+      supportsImageBlocks: false,
+    });
+
+    try {
+      const response = await provider.send({
+        conversationData: {
+          cachedBlocks: [],
+          tail: [],
+        },
+        botDisplayName: 'Bot',
+        imageBlocks: [],
+        otherSpeakers: ['Bot'],
+      });
+
+      expect(response.text).toBe('First thought');
+      expect(response.truncated).toBe(true);
+      expect(response.truncatedSpeaker).toBe('Bot');
+      expect(abortSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
