@@ -35,7 +35,7 @@ Run multiple AI personalities in a single process:
 - Soft token limit (~100k default) - fetches until budget is met, but it's intentionally below provider max context (Claude gets 200k) so we can overflow slightly to keep the latest messages
 - Always fetches a fresh tail even when cached blocks already fill the budget, ensuring the current mention is never skipped
 - Transcript format puts entire conversation in one block
-- Thread context inheritance - when in a thread, allocates ~50% of token budget to parent channel history so the AI understands what led to the thread
+- Only operates in channels explicitly listed in `MAIN_CHANNEL_IDS` (no thread support)
 
 ### Prompt Caching (Anthropic)
 - Stable block boundaries for cache hits
@@ -153,7 +153,7 @@ npm run typecheck
 3. Formats everything into a single transcript block (`Name: message` lines) plus any image references
 4. Sends the transcript to the configured AI provider with prefill `BotName:` and provider-specific options (Anthropic caching hints, OpenAI chat payloads, etc.)
 5. Provider streams the completion
-6. Bot converts `@Name` back into Discord mentions, splits oversized replies, and posts them to the channel/thread
+6. Bot converts `@Name` back into Discord mentions, splits oversized replies, and posts them to the channel
 
 ### Transcript Format
 

@@ -2,9 +2,12 @@
 
 Ideas for enhancing the bot framework while respecting IMP (Immanent Mind Pluralism) principles.
 
-## Gemini Flash Image
+## First Steps
 
-Add nano-banana for image creation.
+- Add nano-banana for image creation.
+- Threading + history mgmt (maybe need actual database again).
+- Get tagging to work for backrooms creation.
+- Split config out into something modifiable at runtime, or something not checked-into repo.
 
 ## Non-Verbal Presence
 

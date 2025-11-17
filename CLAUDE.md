@@ -3,7 +3,7 @@
 ## Optimization Priorities (IN ORDER)
 
 1. **Reply latency** - Bot responds as quickly as possible
-2. **Maximize conversation history** - Always include as much context as possible up to MAX_CONTEXT_TOKENS; never drop data arbitrarily (like the 50% thread split), never fetch only the beginning
+2. **Maximize conversation history** - Always include as much context as possible up to MAX_CONTEXT_TOKENS; never drop data arbitrarily, never fetch only the beginning
 3. **Cost efficiency** - Correct Anthropic prompt caching; don't recache on restart
 4. **Simplicity/elegance** - Clean, understandable code
 
@@ -43,10 +43,9 @@ All major issues have been fixed in the simplified architecture:
 
 1. ~~**Tail cache complexity**~~ - FIXED: Now single in-memory message list per channel
 2. ~~**Per-bot formatting bug**~~ - FIXED: Raw data stored, formatted with correct bot name at query time
-3. ~~**50% thread budget**~~ - FIXED: Threads now get full parent context
-4. ~~**No startup prefetch**~~ - FIXED: History loaded on startup
-5. ~~**Pagination bug**~~ - FIXED: Properly fetches full history backward
-6. ~~**Fragmentation detection**~~ - FIXED: Uses actual Discord usernames, not text parsing
+3. ~~**No startup prefetch**~~ - FIXED: History loaded on startup
+4. ~~**Pagination bug**~~ - FIXED: Properly fetches full history backward
+5. ~~**Fragmentation detection**~~ - FIXED: Uses actual Discord usernames, not text parsing
 
 ## Key Design Decisions
 
@@ -58,3 +57,4 @@ All major issues have been fixed in the simplified architecture:
 - Disk persistence: Only block boundaries (firstMessageId, lastMessageId, tokenCount)
 - OpenAI transcript role: Prefer assistant role with prefill appended (single `\n` before prefill), unless images need user content blocks
 - Fragmentation guard: Uses actual Discord usernames from message store, not text parsing
+- No thread support: Only operates in channels explicitly listed in `MAIN_CHANNEL_IDS`

@@ -33,6 +33,7 @@ const DEFAULT_TOKENS_PER_BLOCK = 30000;
 const messagesByChannel = new Map<string, StoredMessage[]>();
 const blockBoundaries = new Map<string, BlockBoundary[]>();
 
+
 // ---------- Message Management ----------
 
 export function appendMessage(message: Message): void {

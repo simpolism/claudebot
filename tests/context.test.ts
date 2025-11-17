@@ -4,7 +4,7 @@ process.env.GROQ_API_KEY ||= 'test-key';
 process.env.MAIN_CHANNEL_IDS ||= '';
 
 import { describe, expect, it, vi, afterAll, afterEach, beforeAll } from 'vitest';
-import { ChannelType, type Client, type Message } from 'discord.js';
+import { type Client, type Message } from 'discord.js';
 
 type MockMessage = {
   id: string;
@@ -40,10 +40,7 @@ const fakeClient = {
 function baseChannel(overrides: Partial<any> = {}) {
   return {
     id: 'channel',
-    type: ChannelType.GuildText,
     isTextBased: () => true,
-    parent: null,
-    parentId: null,
     ...overrides,
   } as Message['channel'];
 }
@@ -192,61 +189,11 @@ describe('buildConversationContext', () => {
     expect(result.tail[1]?.content).toContain('bob: Hello from bob');
   });
 
-  it('includes parent context for threads without arbitrary split', () => {
-    const store = getStoreModule();
-    const context = getContextModule();
-
-    const parentId = 'parent-channel';
-    const threadId = 'thread-123';
-
-    // Add messages to parent
-    for (let i = 1; i <= 5; i++) {
-      const msg = createMockDiscordMessage(
-        { id: String(i), content: `Parent message ${i}`, authorId: 'alice' },
-        parentId,
-      );
-      store.appendMessage(msg);
-    }
-
-    // Add messages to thread
-    for (let i = 10; i <= 12; i++) {
-      const msg = createMockDiscordMessage(
-        { id: String(i), content: `Thread message ${i}`, authorId: 'bob' },
-        threadId,
-      );
-      store.appendMessage(msg);
-    }
-
-    const parentChannel = baseChannel({ id: parentId });
-    const threadChannel = baseChannel({
-      id: threadId,
-      type: ChannelType.PublicThread,
-      parent: parentChannel,
-      parentId,
-    });
-
-    const result = context.buildConversationContext({
-      channel: threadChannel,
-      maxContextTokens: 100000,
-      client: fakeClient,
-      botDisplayName: 'UnitTester',
-    });
-
-    // Should have both parent and thread messages
-    // Parent has no frozen blocks (all in tail), thread has tail
-    // The combined result should have messages from both
-    expect(result.tail.length).toBeGreaterThan(0);
-    // Thread messages should be present
-    const hasThreadMsg = result.tail.some((m) => m.content.includes('Thread message'));
-    expect(hasThreadMsg).toBe(true);
-  });
-
   it('returns empty context for non-text channel', () => {
     const context = getContextModule();
 
     const nonTextChannel = {
       id: 'voice-channel',
-      type: ChannelType.GuildVoice,
       isTextBased: () => false,
     } as unknown as Message['channel'];
 

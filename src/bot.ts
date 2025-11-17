@@ -3,12 +3,7 @@ import { Client, Events, GatewayIntentBits, Message, Partials } from 'discord.js
 import { createAIProvider, AIProvider } from './providers';
 import { activeBotConfigs, globalConfig, resolveConfig, BotConfig } from './config';
 import { loadBoundariesFromDisk, loadHistoryFromDiscord, appendMessage } from './message-store';
-import {
-  buildConversationContext,
-  getImageBlocksFromAttachments,
-  isThreadChannel,
-  getChannelSpeakers,
-} from './context';
+import { buildConversationContext, getImageBlocksFromAttachments, getChannelSpeakers } from './context';
 import { chunkReplyText, convertOutputMentions } from './discord-utils';
 
 // ---------- Types ----------
@@ -40,17 +35,8 @@ function isChannelAllowed(channelId: string | null | undefined): boolean {
 // ---------- Utility Functions ----------
 
 function isInScope(message: Message): boolean {
-  const channel = message.channel;
-
-  if (allowedRootChannels.size === 0) {
-    return true;
-  }
-
-  if (isThreadChannel(channel)) {
-    return isChannelAllowed(channel.parentId);
-  }
-
-  return isChannelAllowed(channel.id);
+  // Only allow exact channel matches (no threads)
+  return isChannelAllowed(message.channel.id);
 }
 
 function shouldRespond(message: Message, client: Client): boolean {

@@ -140,13 +140,6 @@ export type ConversationData = {
 };
 ```
 
-### Thread Handling
-
-Threads now get **full parent context** (no arbitrary 50% split):
-- Include all parent channel blocks
-- Subtract parent tokens from budget
-- Thread gets remaining budget for its own messages
-
 ---
 
 ## 4. Block Freezing & Disk Persistence
@@ -311,29 +304,7 @@ Prevents AI from starting another speaker's line mid-response:
 
 ---
 
-## 7. Thread Handling
-
-**File:** `context.ts`
-
-When a message is in a thread:
-
-1. **Parent Context (FULL budget):**
-   - Get all parent channel's cached blocks + tail
-   - No arbitrary 50% split anymore
-   - Provides complete context on what started the thread
-
-2. **Thread Budget:**
-   - Remaining budget after parent context
-   - Thread accumulates its own messages normally
-
-3. **Benefits:**
-   - Thread responses have maximum parent context
-   - Stable parent blocks reused (cache hits!)
-   - Thread can see complete channel history
-
----
-
-## 8. Key Configuration Parameters
+## 7. Key Configuration Parameters
 
 **In `.env`:**
 
@@ -353,7 +324,7 @@ When a message is in a thread:
 
 ---
 
-## 9. Design Philosophy
+## 8. Design Philosophy
 
 From README:
 

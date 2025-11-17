@@ -24,14 +24,8 @@ function isChannelAllowed(channelId) {
 }
 // ---------- Utility Functions ----------
 function isInScope(message) {
-    const channel = message.channel;
-    if (allowedRootChannels.size === 0) {
-        return true;
-    }
-    if ((0, context_1.isThreadChannel)(channel)) {
-        return isChannelAllowed(channel.parentId);
-    }
-    return isChannelAllowed(channel.id);
+    // Only allow exact channel matches (no threads)
+    return isChannelAllowed(message.channel.id);
 }
 function shouldRespond(message, client) {
     if (!isInScope(message))
