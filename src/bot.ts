@@ -244,32 +244,32 @@ function setupBotEvents(instance: BotInstance): void {
 
         if (replyChunks.length > 0) {
           const [firstChunk, ...restChunks] = replyChunks;
-          const firstSent = await message.reply(firstChunk);
-          sentMessages.push(firstSent);
 
-          for (let i = 0; i < restChunks.length; i++) {
-            const chunk = restChunks[i];
-            const isLastChunk = i === restChunks.length - 1;
-            // Attach image to last message if present
-            const files = isLastChunk && imageAttachment ? [imageAttachment] : undefined;
+          if (restChunks.length === 0) {
+            // Single chunk - attach image here if present
+            const firstSent = await message.reply({
+              content: firstChunk,
+              files: imageAttachment ? [imageAttachment] : undefined,
+            });
+            sentMessages.push(firstSent);
+          } else {
+            // Multiple chunks - image goes on last chunk
+            const firstSent = await message.reply(firstChunk);
+            sentMessages.push(firstSent);
 
-            if (hasSend(message.channel)) {
-              const sent = await message.channel.send({ content: chunk, files });
-              sentMessages.push(sent);
-            } else {
-              const sent = await message.reply({ content: chunk, files });
-              sentMessages.push(sent);
-            }
-          }
+            for (let i = 0; i < restChunks.length; i++) {
+              const chunk = restChunks[i];
+              const isLastChunk = i === restChunks.length - 1;
+              // Attach image to last message if present
+              const files = isLastChunk && imageAttachment ? [imageAttachment] : undefined;
 
-          // If only one chunk and we have an image, send image separately
-          if (restChunks.length === 0 && imageAttachment) {
-            if (hasSend(message.channel)) {
-              const sent = await message.channel.send({ content: '', files: [imageAttachment] });
-              sentMessages.push(sent);
-            } else {
-              const sent = await message.reply({ content: '', files: [imageAttachment] });
-              sentMessages.push(sent);
+              if (hasSend(message.channel)) {
+                const sent = await message.channel.send({ content: chunk, files });
+                sentMessages.push(sent);
+              } else {
+                const sent = await message.reply({ content: chunk, files });
+                sentMessages.push(sent);
+              }
             }
           }
         } else if (imageAttachment) {
