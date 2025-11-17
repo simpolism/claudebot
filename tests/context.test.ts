@@ -6,43 +6,27 @@ process.env.MAIN_CHANNEL_IDS ||= '';
 import { describe, expect, it, vi, afterAll, afterEach, beforeAll } from 'vitest';
 import { ChannelType, type Client, type Message } from 'discord.js';
 
-type TestFetchedMessage = {
+type MockMessage = {
   id: string;
-  formattedText: string;
-  tokens: number;
-  role: 'user' | 'assistant';
+  content: string;
+  authorId: string;
 };
 
-type CacheRecord = {
-  blocks: Array<{
-    text?: string;
-    tokenCount: number;
-    firstMessageId: string;
-    lastMessageId: string;
-  }>;
-  lastId: string | null;
-};
-
-function createCacheAccess(initial: Record<string, CacheRecord>) {
-  const store = new Map<string, CacheRecord>(Object.entries(initial));
-  const updateCalls: Array<{ channelId: string; messageIds: string[] }> = [];
-
+function createMockDiscordMessage(msg: MockMessage, channelId: string): Message {
   return {
-    cacheAccess: {
-      getCachedBlocks: (channelId: string) => store.get(channelId)?.blocks ?? [],
-      getLastCachedMessageId: (channelId: string) => store.get(channelId)?.lastId ?? null,
-      updateCache: (
-        channelId: string,
-        messages: Array<{ id: string; formattedText: string; tokens: number }>,
-      ) => {
-        updateCalls.push({
-          channelId,
-          messageIds: messages.map((msg) => msg.id),
-        });
-      },
+    id: msg.id,
+    content: msg.content,
+    channel: { id: channelId },
+    author: {
+      id: msg.authorId,
+      username: msg.authorId,
+      globalName: msg.authorId,
+      tag: msg.authorId,
     },
-    updateCalls,
-  };
+    createdTimestamp: parseInt(msg.id, 10) * 1000,
+    attachments: new Map(),
+    mentions: { users: new Map() },
+  } as unknown as Message;
 }
 
 const fakeClient = {
@@ -69,345 +53,169 @@ afterAll(() => {
   consoleSpy.mockRestore();
 });
 
+type StoreModule = typeof import('../src/message-store');
 type ContextModule = typeof import('../src/context');
+
+let storeModule: StoreModule | null = null;
 let contextModule: ContextModule | null = null;
 
 beforeAll(async () => {
+  storeModule = await import('../src/message-store');
   contextModule = await import('../src/context');
 });
 
+function getStoreModule(): StoreModule {
+  if (!storeModule) throw new Error('store module not loaded');
+  return storeModule;
+}
+
 function getContextModule(): ContextModule {
-  if (!contextModule) {
-    throw new Error('context module not loaded');
-  }
+  if (!contextModule) throw new Error('context module not loaded');
   return contextModule;
 }
 
 afterEach(() => {
-  getContextModule().clearTailCache();
+  getStoreModule().clearAll();
 });
 
-function createMockChannel(messages: MockMessage[]): Message['channel'] {
-  const messageMap = new Map(
-    messages.map((m) => [
-      m.id,
-      {
-        id: m.id,
-        content: m.content,
-        author: { id: m.authorId, username: m.authorId, tag: m.authorId },
-        attachments: [],
-        mentions: {
-          users: new Map(),
-        },
-      },
-    ]),
-  );
+describe('message-store', () => {
+  it('appends messages to in-memory storage', () => {
+    const store = getStoreModule();
+    const msg1 = createMockDiscordMessage({ id: '1', content: 'Hello', authorId: 'alice' }, 'chan');
+    const msg2 = createMockDiscordMessage({ id: '2', content: 'World', authorId: 'bob' }, 'chan');
 
-  return {
-    id: 'channel',
-    type: ChannelType.GuildText,
-    isTextBased: () => true,
-    parent: null,
-    parentId: null,
-    messages: {
-      async fetch(idOrOptions?: any) {
-        if (typeof idOrOptions === 'string') {
-          return messageMap.get(idOrOptions) as unknown as Message;
-        }
-        const after = idOrOptions?.after;
-        const before = idOrOptions?.before;
-        const limit = idOrOptions?.limit ?? 100;
+    store.appendMessage(msg1);
+    store.appendMessage(msg2);
 
-        let result = [...messageMap.values()];
-
-        if (after) {
-          // Fetch messages AFTER the given ID (going forward in time)
-          result = result.filter((msg) => BigInt(msg.id) > BigInt(after));
-          // Sort chronologically and take first `limit`
-          result = result.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-          result = result.slice(0, limit);
-        } else if (before) {
-          // Fetch messages BEFORE the given ID (going backward in time)
-          result = result.filter((msg) => BigInt(msg.id) < BigInt(before));
-          // Sort chronologically and take LAST `limit` (most recent before cursor)
-          result = result.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-          result = result.slice(-limit);
-        } else {
-          // No cursor: Discord returns MOST RECENT messages (this is key!)
-          // Sort chronologically and take LAST `limit`
-          result = result.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-          result = result.slice(-limit);
-        }
-
-        const collection = new Map(result.map((msg) => [msg.id, msg]));
-        (collection as any).last = () => result[result.length - 1];
-        return collection as any;
-      },
-    },
-  } as Message['channel'];
-}
-
-describe('fetchMessagesAfter pagination', () => {
-  it('fetches all available history up to token budget on empty cache', async () => {
-    // Bug: When starting with no cache, the function only fetches 100 messages
-    // because it uses `after: undefined` which returns newest messages,
-    // then tries to fetch `after: <newest_id>` which returns nothing.
-
-    // Create 250 messages (more than one fetch batch of 100)
-    const allMessages: MockMessage[] = [];
-    for (let i = 1; i <= 250; i++) {
-      allMessages.push({
-        id: String(i),
-        content: `Message ${i}`,
-        authorId: i % 2 === 0 ? 'alice' : 'bob',
-      });
-    }
-
-    const channel = createMockChannel(allMessages);
-    const { cacheAccess } = createCacheAccess({
-      channel: { blocks: [], lastId: null },
-    });
-
-    const context = getContextModule();
-    // With 250 messages averaging ~20 chars each = ~5 tokens per message
-    // Budget of 2000 tokens should fetch ~400 messages worth, so all 250
-    const conversation = await context.buildConversationContext({
-      channel,
-      maxContextTokens: 2000,
-      client: fakeClient,
-      botDisplayName: 'UnitTester',
-      cacheAccess,
-    });
-
-    // Should have fetched significantly more than 100 messages
-    expect(conversation.tail.length).toBeGreaterThan(100);
-    // Should have fetched all 250 messages (well within budget)
-    expect(conversation.tail.length).toBe(250);
-    // Should be in chronological order (oldest first)
-    expect(conversation.tail[0]?.content).toContain('Message 1');
-    expect(conversation.tail[249]?.content).toContain('Message 250');
+    const messages = store.getChannelMessages('chan');
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.content).toBe('Hello');
+    expect(messages[1]?.content).toBe('World');
   });
 
-  it('continues fetching incrementally after initial load', async () => {
-    // First load gets history, second load gets only new messages
-    const initialMessages: MockMessage[] = [];
-    for (let i = 1; i <= 50; i++) {
-      initialMessages.push({
-        id: String(i),
-        content: `Message ${i}`,
-        authorId: 'alice',
-      });
+  it('freezes blocks when token threshold reached', () => {
+    const store = getStoreModule();
+
+    // Create enough messages to exceed 30k tokens (~120k chars at 4 chars/token)
+    const channelId = 'test-channel';
+    for (let i = 1; i <= 100; i++) {
+      const longContent = 'x'.repeat(1500); // ~375 tokens per message = ~37.5k tokens total
+      const msg = createMockDiscordMessage(
+        { id: String(i), content: longContent, authorId: 'alice' },
+        channelId,
+      );
+      store.appendMessage(msg);
     }
 
-    const channel = createMockChannel(initialMessages);
-    const { cacheAccess } = createCacheAccess({
-      channel: { blocks: [], lastId: null },
-    });
+    const boundaries = store.getBlockBoundaries(channelId);
+    expect(boundaries.length).toBeGreaterThan(0);
+    expect(boundaries[0]?.tokenCount).toBeGreaterThanOrEqual(30000);
+  });
 
-    const context = getContextModule();
+  it('formats messages with bot name when author is bot', () => {
+    const store = getStoreModule();
+    const channelId = 'chan';
 
-    // First fetch - should get all 50 messages
-    const first = await context.buildConversationContext({
-      channel,
-      maxContextTokens: 10000,
-      client: fakeClient,
-      botDisplayName: 'UnitTester',
-      cacheAccess,
-    });
-    expect(first.tail.length).toBe(50);
+    // Bot message
+    const botMsg = createMockDiscordMessage(
+      { id: '1', content: 'I am bot', authorId: 'bot-user' },
+      channelId,
+    );
+    store.appendMessage(botMsg);
 
-    // Add new messages
-    const updatedMessages = [
-      ...initialMessages,
-      { id: '51', content: 'New message 51', authorId: 'bob' },
-      { id: '52', content: 'New message 52', authorId: 'alice' },
-    ];
-    const updatedChannel = createMockChannel(updatedMessages);
+    // User message
+    const userMsg = createMockDiscordMessage(
+      { id: '2', content: 'I am user', authorId: 'alice' },
+      channelId,
+    );
+    store.appendMessage(userMsg);
 
-    // Second fetch - should get the 2 new messages appended to tail
-    const second = await context.buildConversationContext({
-      channel: updatedChannel,
-      maxContextTokens: 10000,
-      client: fakeClient,
-      botDisplayName: 'UnitTester',
-      cacheAccess,
-    });
-    expect(second.tail.length).toBe(52);
-    expect(second.tail[50]?.content).toContain('New message 51');
-    expect(second.tail[51]?.content).toContain('New message 52');
+    const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester');
+
+    // Bot message should use botDisplayName, not authorId
+    expect(result.tail[0]).toBe('UnitTester: I am bot');
+    expect(result.tail[1]).toBe('alice: I am user');
+  });
+
+  it('trims oldest messages when over budget', () => {
+    const store = getStoreModule();
+    const channelId = 'chan';
+
+    // Add 10 messages with longer content
+    for (let i = 1; i <= 10; i++) {
+      const msg = createMockDiscordMessage(
+        { id: String(i), content: `This is a longer message number ${i} with more content`, authorId: 'alice' },
+        channelId,
+      );
+      store.appendMessage(msg);
+    }
+
+    // Request with budget that fits ~3-4 messages (each ~20 tokens)
+    const result = store.getContext(channelId, 60, 'bot-user', 'UnitTester');
+
+    // Should have fewer than 10 messages
+    expect(result.tail.length).toBeLessThan(10);
+    expect(result.tail.length).toBeGreaterThan(0);
+    // Should keep newest messages
+    const lastTail = result.tail[result.tail.length - 1];
+    expect(lastTail).toContain('message number 10');
   });
 });
 
 describe('buildConversationContext', () => {
-  it('hydrates cached block text from metadata-only entries', async () => {
-    const channelMessages: MockMessage[] = [
-      { id: '90', content: 'Alice says hi', authorId: 'alice' },
-      { id: '95', content: 'Bob replies', authorId: 'bob' },
-    ];
-    const channel = createMockChannel(channelMessages);
-    const metadataBlock = {
-      text: undefined as unknown as string,
-      tokenCount: 100,
-      firstMessageId: '90',
-      lastMessageId: '95',
-    };
-    const { cacheAccess } = createCacheAccess({
-      channel: {
-        blocks: [metadataBlock],
-        lastId: '95',
-      },
-    });
-
+  it('builds context from in-memory messages', () => {
+    const store = getStoreModule();
     const context = getContextModule();
-    const conversation = await context.buildConversationContext({
-      channel,
-      maxContextTokens: 1000,
-      client: fakeClient,
-      botDisplayName: 'UnitTester',
-      cacheAccess,
-      fetchMessages: async () => [],
-    });
 
-    expect(metadataBlock.text).toContain('Alice');
-    expect(conversation.cachedBlocks[0]).toContain('Alice says hi');
-  });
-
-  it('fetches new tail messages using last tail id as cursor', async () => {
-    const channel = createMockChannel([]);
-    const { cacheAccess } = createCacheAccess({
-      channel: {
-        blocks: [],
-        lastId: null,
-      },
-    });
-
-    const recordedAfterIds: Array<string | null> = [];
-    const fetchMessages = vi
-      .fn()
-      .mockImplementationOnce(
-        async (_channel: Message['channel'], afterId: string | null) => {
-          recordedAfterIds.push(afterId);
-          return [
-            {
-              id: '300',
-              formattedText: 'User: first tail',
-              tokens: 10,
-              role: 'user',
-            },
-          ];
-        },
-      )
-      .mockImplementationOnce(
-        async (_channel: Message['channel'], afterId: string | null) => {
-          recordedAfterIds.push(afterId);
-          return [
-            {
-              id: '301',
-              formattedText: 'User: second tail',
-              tokens: 10,
-              role: 'user',
-            },
-          ];
-        },
-      );
-
-    const context = getContextModule();
-    await context.buildConversationContext({
-      channel,
-      maxContextTokens: 1000,
-      client: fakeClient,
-      botDisplayName: 'UnitTester',
-      cacheAccess,
-      fetchMessages: fetchMessages as any,
-    });
-
-    await context.buildConversationContext({
-      channel,
-      maxContextTokens: 1000,
-      client: fakeClient,
-      botDisplayName: 'UnitTester',
-      cacheAccess,
-      fetchMessages: fetchMessages as any,
-    });
-
-    expect(recordedAfterIds[0]).toBeNull();
-    expect(recordedAfterIds[1]).toBe('300');
-  });
-
-  it('fetches a guaranteed tail even when cached blocks fill the budget', async () => {
     const channelId = 'channel';
-    const existingBlockText = 'Earlier cached transcript';
-    const { cacheAccess, updateCalls } = createCacheAccess({
-      [channelId]: {
-        blocks: [
-          {
-            text: existingBlockText,
-            tokenCount: 100000,
-            firstMessageId: '150',
-            lastMessageId: '200',
-          },
-        ],
-        lastId: '200',
-      },
-    });
+    const msg1 = createMockDiscordMessage(
+      { id: '1', content: 'Hello from alice', authorId: 'alice' },
+      channelId,
+    );
+    const msg2 = createMockDiscordMessage(
+      { id: '2', content: 'Hello from bob', authorId: 'bob' },
+      channelId,
+    );
 
-    let capturedBudget = 0;
-    const fetchMessages = async (
-      _channel: any,
-      _lastId: string | null,
-      tokenBudget: number,
-    ): Promise<TestFetchedMessage[]> => {
-      capturedBudget = tokenBudget;
-      return [
-        {
-          id: '250',
-          formattedText: 'Alice: Hello again',
-          tokens: 12,
-          role: 'user',
-        },
-      ];
-    };
+    store.appendMessage(msg1);
+    store.appendMessage(msg2);
 
-    const context = getContextModule();
-    const maxContextTokens = 100000;
-    const conversation = await context.buildConversationContext({
+    const result = context.buildConversationContext({
       channel: baseChannel({ id: channelId }),
-      maxContextTokens,
+      maxContextTokens: 10000,
       client: fakeClient,
       botDisplayName: 'UnitTester',
-      cacheAccess,
-      fetchMessages,
     });
 
-    expect(capturedBudget).toBe(maxContextTokens);
-    expect(conversation.tail).toHaveLength(1);
-    expect(conversation.tail[0]?.content).toBe('Alice: Hello again');
-    expect(conversation.cachedBlocks).toContain(existingBlockText);
-    expect(updateCalls).toHaveLength(1);
-    expect(updateCalls[0]?.messageIds).toEqual(['250']);
+    expect(result.tail).toHaveLength(2);
+    expect(result.tail[0]?.content).toContain('alice: Hello from alice');
+    expect(result.tail[1]?.content).toContain('bob: Hello from bob');
   });
 
-  it('pulls parent cached context into thread conversations', async () => {
+  it('includes parent context for threads without arbitrary split', () => {
+    const store = getStoreModule();
+    const context = getContextModule();
+
     const parentId = 'parent-channel';
     const threadId = 'thread-123';
-    const parentBlockText = 'Parent: Opening context';
-    const { cacheAccess } = createCacheAccess({
-      [parentId]: {
-        blocks: [
-          {
-            text: parentBlockText,
-            tokenCount: 1500,
-            firstMessageId: '10',
-            lastMessageId: '20',
-          },
-        ],
-        lastId: '20',
-      },
-      [threadId]: {
-        blocks: [],
-        lastId: null,
-      },
-    });
+
+    // Add messages to parent
+    for (let i = 1; i <= 5; i++) {
+      const msg = createMockDiscordMessage(
+        { id: String(i), content: `Parent message ${i}`, authorId: 'alice' },
+        parentId,
+      );
+      store.appendMessage(msg);
+    }
+
+    // Add messages to thread
+    for (let i = 10; i <= 12; i++) {
+      const msg = createMockDiscordMessage(
+        { id: String(i), content: `Thread message ${i}`, authorId: 'bob' },
+        threadId,
+      );
+      store.appendMessage(msg);
+    }
 
     const parentChannel = baseChannel({ id: parentId });
     const threadChannel = baseChannel({
@@ -417,109 +225,70 @@ describe('buildConversationContext', () => {
       parentId,
     });
 
-    const fetchMessages = async (): Promise<TestFetchedMessage[]> => [
-      {
-        id: '30',
-        formattedText: 'Alice: Thread message',
-        tokens: 10,
-        role: 'user',
-      },
-      {
-        id: '31',
-        formattedText: 'Bob: Follow-up',
-        tokens: 10,
-        role: 'user',
-      },
-    ];
-
-    const context = getContextModule();
-    const conversation = await context.buildConversationContext({
+    const result = context.buildConversationContext({
       channel: threadChannel,
       maxContextTokens: 100000,
       client: fakeClient,
       botDisplayName: 'UnitTester',
-      cacheAccess,
-      fetchMessages,
     });
 
-    expect(conversation.cachedBlocks).toEqual([parentBlockText]);
-    expect(conversation.tail).toHaveLength(2);
-    expect(conversation.tail.map((msg) => msg.content)).toEqual([
-      'Alice: Thread message',
-      'Bob: Follow-up',
-    ]);
+    // Should have both parent and thread messages
+    // Parent has no frozen blocks (all in tail), thread has tail
+    // The combined result should have messages from both
+    expect(result.tail.length).toBeGreaterThan(0);
+    // Thread messages should be present
+    const hasThreadMsg = result.tail.some((m) => m.content.includes('Thread message'));
+    expect(hasThreadMsg).toBe(true);
   });
 
-  it('preserves byte-identical cached blocks across multiple turns', async () => {
-    const channelId = 'channel';
-    const existingBlockText = 'Transcript Block\nLine Two';
-    const { cacheAccess } = createCacheAccess({
-      [channelId]: {
-        blocks: [
-          {
-            text: existingBlockText,
-            tokenCount: 5000,
-            firstMessageId: '90',
-            lastMessageId: '100',
-          },
-        ],
-        lastId: '100',
-      },
-    });
-
-    const firstFetchMessages: TestFetchedMessage[] = [
-      {
-        id: '105',
-        formattedText: 'Alice: Follow-up',
-        tokens: 12,
-        role: 'user',
-      },
-    ];
-
-    const fetchSpy = vi
-      .fn()
-      .mockResolvedValueOnce(firstFetchMessages)
-      .mockResolvedValueOnce([
-        {
-          id: '110',
-          formattedText: 'Alice: Second turn',
-          tokens: 12,
-          role: 'user',
-        },
-      ]);
-
+  it('returns empty context for non-text channel', () => {
     const context = getContextModule();
 
-    const firstConversation = await context.buildConversationContext({
-      channel: baseChannel({ id: channelId }),
-      maxContextTokens: 100000,
+    const nonTextChannel = {
+      id: 'voice-channel',
+      type: ChannelType.GuildVoice,
+      isTextBased: () => false,
+    } as unknown as Message['channel'];
+
+    const result = context.buildConversationContext({
+      channel: nonTextChannel,
+      maxContextTokens: 10000,
       client: fakeClient,
       botDisplayName: 'UnitTester',
-      cacheAccess,
-      fetchMessages: fetchSpy,
     });
 
-    expect(firstConversation.cachedBlocks).toContain(existingBlockText);
-    expect(firstConversation.tail).toHaveLength(1);
+    expect(result.cachedBlocks).toEqual([]);
+    expect(result.tail).toEqual([]);
+  });
 
-    const secondConversation = await context.buildConversationContext({
+  it('assigns correct role based on bot authorship', () => {
+    const store = getStoreModule();
+    const context = getContextModule();
+
+    const channelId = 'channel';
+
+    // User message
+    const userMsg = createMockDiscordMessage(
+      { id: '1', content: 'User says hi', authorId: 'alice' },
+      channelId,
+    );
+    store.appendMessage(userMsg);
+
+    // Bot message (author ID matches bot)
+    const botMsg = createMockDiscordMessage(
+      { id: '2', content: 'Bot replies', authorId: 'bot-user' },
+      channelId,
+    );
+    store.appendMessage(botMsg);
+
+    const result = context.buildConversationContext({
       channel: baseChannel({ id: channelId }),
-      maxContextTokens: 100000,
+      maxContextTokens: 10000,
       client: fakeClient,
       botDisplayName: 'UnitTester',
-      cacheAccess,
-      fetchMessages: fetchSpy,
     });
 
-    expect(secondConversation.cachedBlocks).toContain(existingBlockText);
-    expect(
-      secondConversation.cachedBlocks.find((block) => block === existingBlockText),
-    ).toBe(existingBlockText);
-    expect(secondConversation.tail).toHaveLength(2);
+    expect(result.tail[0]?.role).toBe('user');
+    expect(result.tail[1]?.role).toBe('assistant');
   });
 });
-type MockMessage = {
-  id: string;
-  content: string;
-  authorId: string;
-};

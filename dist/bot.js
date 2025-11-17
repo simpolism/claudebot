@@ -4,16 +4,13 @@ require("dotenv/config");
 const discord_js_1 = require("discord.js");
 const providers_1 = require("./providers");
 const config_1 = require("./config");
-const cache_1 = require("./cache");
+const message_store_1 = require("./message-store");
 const context_1 = require("./context");
 const discord_utils_1 = require("./discord-utils");
 // ---------- Bot-to-Bot Exchange Tracking ----------
-// Track consecutive bot messages per channel to prevent infinite loops
 const consecutiveBotMessages = new Map();
 const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
 // ---------- Channel Processing Locks ----------
-// Prevent duplicate responses when bot is tagged multiple times quickly
-// Key format: "botId:channelId"
 const processingChannels = new Set();
 const allowedRootChannels = new Set(config_1.globalConfig.mainChannelIds);
 function isChannelAllowed(channelId) {
@@ -45,7 +42,6 @@ function shouldRespond(message, client) {
         return false;
     if (!message.mentions.has(client.user))
         return false;
-    // Check bot-to-bot exchange limit
     const channelId = message.channel.id;
     const currentCount = consecutiveBotMessages.get(channelId) || 0;
     if (currentCount >= MAX_CONSECUTIVE_BOT_EXCHANGES) {
@@ -139,16 +135,16 @@ function setupBotEvents(instance) {
     client.on(discord_js_1.Events.MessageCreate, async (message) => {
         let stopTyping = null;
         try {
-            // Track bot-to-bot exchanges
+            // ALWAYS append messages to in-memory store (for all in-scope messages)
             if (isInScope(message)) {
+                (0, message_store_1.appendMessage)(message);
+                // Track bot-to-bot exchanges
                 const channelId = message.channel.id;
                 if (message.author.bot) {
-                    // Bot message: increment counter
                     const current = consecutiveBotMessages.get(channelId) || 0;
                     consecutiveBotMessages.set(channelId, current + 1);
                 }
                 else {
-                    // Human message: reset counter
                     consecutiveBotMessages.set(channelId, 0);
                 }
             }
@@ -156,19 +152,17 @@ function setupBotEvents(instance) {
                 return;
             const channelId = message.channel.id;
             const botDisplayName = getBotCanonicalName(client);
-            // Check if this bot is already processing this channel
             const lockKey = `${client.user?.id}:${channelId}`;
             if (processingChannels.has(lockKey)) {
                 console.log(`[${config.name}] Already processing ${channelId}, skipping duplicate`);
                 return;
             }
-            // Acquire lock
             processingChannels.add(lockKey);
             const receiveTime = Date.now();
             console.log(`[${config.name}] Received mention ${message.id} in ${channelId} at ${new Date(receiveTime).toISOString()}`);
             try {
                 const contextStart = Date.now();
-                const conversationData = await (0, context_1.buildConversationContext)({
+                const conversationData = (0, context_1.buildConversationContext)({
                     channel: message.channel,
                     maxContextTokens: resolved.maxContextTokens,
                     client,
@@ -207,7 +201,6 @@ function setupBotEvents(instance) {
                 console.log(`[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'}) in ${totalDuration}ms`);
             }
             finally {
-                // Release lock
                 processingChannels.delete(lockKey);
             }
         }
@@ -227,8 +220,8 @@ function setupBotEvents(instance) {
 }
 // ---------- Main ----------
 async function main() {
-    // Load conversation cache for stable prompt caching
-    (0, cache_1.loadCache)();
+    // Load block boundaries from disk (for Anthropic cache consistency)
+    (0, message_store_1.loadBoundariesFromDisk)();
     console.log('Starting multi-bot system with configuration:', {
         mainChannelIds: config_1.globalConfig.mainChannelIds.length > 0 ? config_1.globalConfig.mainChannelIds : ['(unset)'],
         maxContextTokens: config_1.globalConfig.maxContextTokens,
@@ -268,6 +261,14 @@ async function main() {
     catch (err) {
         console.error('One or more bots failed to login. Exiting.');
         process.exit(1);
+    }
+    // Load history for configured channels (after login so we have access)
+    if (config_1.globalConfig.mainChannelIds.length > 0 && instances.length > 0) {
+        const firstInstance = instances[0];
+        if (firstInstance) {
+            console.log('Loading channel history...');
+            await (0, message_store_1.loadHistoryFromDiscord)(config_1.globalConfig.mainChannelIds, firstInstance.client, config_1.globalConfig.maxContextTokens);
+        }
     }
 }
 main().catch((err) => {

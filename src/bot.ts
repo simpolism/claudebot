@@ -2,12 +2,8 @@ import 'dotenv/config';
 import { Client, Events, GatewayIntentBits, Message, Partials } from 'discord.js';
 import { createAIProvider, AIProvider } from './providers';
 import { activeBotConfigs, globalConfig, resolveConfig, BotConfig } from './config';
-import { loadCache } from './cache';
-import {
-  buildConversationContext,
-  getImageBlocksFromAttachments,
-  isThreadChannel,
-} from './context';
+import { loadBoundariesFromDisk, loadHistoryFromDiscord, appendMessage } from './message-store';
+import { buildConversationContext, getImageBlocksFromAttachments, isThreadChannel } from './context';
 import { chunkReplyText, convertOutputMentions } from './discord-utils';
 
 // ---------- Types ----------
@@ -18,13 +14,10 @@ interface BotInstance {
 }
 
 // ---------- Bot-to-Bot Exchange Tracking ----------
-// Track consecutive bot messages per channel to prevent infinite loops
 const consecutiveBotMessages = new Map<string, number>();
 const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
 
 // ---------- Channel Processing Locks ----------
-// Prevent duplicate responses when bot is tagged multiple times quickly
-// Key format: "botId:channelId"
 const processingChannels = new Set<string>();
 
 const allowedRootChannels = new Set(globalConfig.mainChannelIds);
@@ -62,7 +55,6 @@ function shouldRespond(message: Message, client: Client): boolean {
 
   if (!message.mentions.has(client.user)) return false;
 
-  // Check bot-to-bot exchange limit
   const channelId = message.channel.id;
   const currentCount = consecutiveBotMessages.get(channelId) || 0;
   if (currentCount >= MAX_CONSECUTIVE_BOT_EXCHANGES) {
@@ -172,73 +164,27 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
   return { config: botConfig, client, aiProvider };
 }
 
-async function prefetchChannelContext(
-  instance: BotInstance,
-  channelIds: string[],
-): Promise<void> {
-  const { config, client } = instance;
-  const resolved = resolveConfig(config);
-  const botDisplayName = getBotCanonicalName(client);
-
-  if (channelIds.length === 0) {
-    console.log(`[${config.name}] No channels configured for prefetch`);
-    return;
-  }
-
-  console.log(
-    `[${config.name}] Prefetching context for ${channelIds.length} channel(s)...`,
-  );
-
-  for (const channelId of channelIds) {
-    try {
-      const channel = await client.channels.fetch(channelId);
-      if (!channel || !channel.isTextBased()) {
-        console.warn(`[${config.name}] Channel ${channelId} not found or not text-based`);
-        continue;
-      }
-
-      const startTime = Date.now();
-      await buildConversationContext({
-        channel,
-        maxContextTokens: resolved.maxContextTokens,
-        client,
-        botDisplayName,
-      });
-      const duration = Date.now() - startTime;
-      console.log(`[${config.name}] Prefetched ${channelId} in ${duration}ms`);
-    } catch (err) {
-      console.error(`[${config.name}] Failed to prefetch ${channelId}:`, err);
-    }
-  }
-
-  console.log(`[${config.name}] Prefetch complete`);
-}
-
 function setupBotEvents(instance: BotInstance): void {
   const { config, client, aiProvider } = instance;
   const resolved = resolveConfig(config);
 
   client.once(Events.ClientReady, (c) => {
     console.log(`[${config.name}] Logged in as ${c.user.tag}`);
-
-    // Prefetch context for configured channels immediately after login
-    if (globalConfig.mainChannelIds.length > 0) {
-      void prefetchChannelContext(instance, globalConfig.mainChannelIds);
-    }
   });
 
   client.on(Events.MessageCreate, async (message) => {
     let stopTyping: (() => void) | null = null;
     try {
-      // Track bot-to-bot exchanges
+      // ALWAYS append messages to in-memory store (for all in-scope messages)
       if (isInScope(message)) {
+        appendMessage(message);
+
+        // Track bot-to-bot exchanges
         const channelId = message.channel.id;
         if (message.author.bot) {
-          // Bot message: increment counter
           const current = consecutiveBotMessages.get(channelId) || 0;
           consecutiveBotMessages.set(channelId, current + 1);
         } else {
-          // Human message: reset counter
           consecutiveBotMessages.set(channelId, 0);
         }
       }
@@ -248,16 +194,12 @@ function setupBotEvents(instance: BotInstance): void {
       const channelId = message.channel.id;
       const botDisplayName = getBotCanonicalName(client);
 
-      // Check if this bot is already processing this channel
       const lockKey = `${client.user?.id}:${channelId}`;
       if (processingChannels.has(lockKey)) {
-        console.log(
-          `[${config.name}] Already processing ${channelId}, skipping duplicate`,
-        );
+        console.log(`[${config.name}] Already processing ${channelId}, skipping duplicate`);
         return;
       }
 
-      // Acquire lock
       processingChannels.add(lockKey);
 
       const receiveTime = Date.now();
@@ -267,16 +209,14 @@ function setupBotEvents(instance: BotInstance): void {
 
       try {
         const contextStart = Date.now();
-        const conversationData = await buildConversationContext({
+        const conversationData = buildConversationContext({
           channel: message.channel,
           maxContextTokens: resolved.maxContextTokens,
           client,
           botDisplayName,
         });
         const contextDuration = Date.now() - contextStart;
-        console.log(
-          `[${config.name}] Context built for ${message.id} in ${contextDuration}ms`,
-        );
+        console.log(`[${config.name}] Context built for ${message.id} in ${contextDuration}ms`);
 
         stopTyping = startTypingIndicator(message.channel);
         const imageBlocks = getImageBlocksFromAttachments(message.attachments);
@@ -287,18 +227,12 @@ function setupBotEvents(instance: BotInstance): void {
           imageBlocks,
         });
         const providerDuration = Date.now() - providerStart;
-        console.log(
-          `[${config.name}] Provider responded for ${message.id} in ${providerDuration}ms`,
-        );
+        console.log(`[${config.name}] Provider responded for ${message.id} in ${providerDuration}ms`);
         const replyText = aiReply.text;
         stopTyping();
         stopTyping = null;
 
-        const formattedReplyText = convertOutputMentions(
-          replyText,
-          message.channel,
-          client,
-        );
+        const formattedReplyText = convertOutputMentions(replyText, message.channel, client);
 
         const replyChunks = chunkReplyText(formattedReplyText);
         if (replyChunks.length > 0) {
@@ -321,7 +255,6 @@ function setupBotEvents(instance: BotInstance): void {
           }) in ${totalDuration}ms`,
         );
       } finally {
-        // Release lock
         processingChannels.delete(lockKey);
       }
     } catch (err) {
@@ -339,8 +272,8 @@ function setupBotEvents(instance: BotInstance): void {
 
 // ---------- Main ----------
 async function main(): Promise<void> {
-  // Load conversation cache for stable prompt caching
-  loadCache();
+  // Load block boundaries from disk (for Anthropic cache consistency)
+  loadBoundariesFromDisk();
 
   console.log('Starting multi-bot system with configuration:', {
     mainChannelIds:
@@ -385,6 +318,19 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error('One or more bots failed to login. Exiting.');
     process.exit(1);
+  }
+
+  // Load history for configured channels (after login so we have access)
+  if (globalConfig.mainChannelIds.length > 0 && instances.length > 0) {
+    const firstInstance = instances[0];
+    if (firstInstance) {
+      console.log('Loading channel history...');
+      await loadHistoryFromDiscord(
+        globalConfig.mainChannelIds,
+        firstInstance.client,
+        globalConfig.maxContextTokens,
+      );
+    }
   }
 }
 
