@@ -4,9 +4,7 @@ Ideas for enhancing the bot framework while respecting IMP (Immanent Mind Plural
 
 ## First Steps
 
-- Stop + restart reponse on simultaneous tag.
 - Threading + history mgmt (maybe need actual database again).
-- Get tagging to work for backrooms creation.
 - Split config out into something modifiable at runtime, or something not checked-into repo.
 
 ## Non-Verbal Presence
