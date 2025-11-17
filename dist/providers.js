@@ -332,18 +332,26 @@ class GeminiProvider {
                 });
             }
         }
+        console.log(`[GeminiProvider] Sending ${contentParts.length} content parts to model`);
         const result = await generativeModel.generateContent(contentParts);
         const response = result.response;
         // Extract text and image from response parts
         let textContent = '';
         let imageData;
+        const candidateCount = response.candidates?.length || 0;
+        console.log(`[GeminiProvider] Received ${candidateCount} candidates`);
         for (const candidate of response.candidates || []) {
+            const partCount = candidate.content?.parts?.length || 0;
+            console.log(`[GeminiProvider] Candidate has ${partCount} parts`);
             for (const part of candidate.content?.parts || []) {
                 if ('text' in part && part.text) {
+                    console.log(`[GeminiProvider] Found text part: ${part.text.length} chars`);
                     textContent += part.text;
                 }
                 if ('inlineData' in part && part.inlineData) {
                     // Convert base64 to Buffer
+                    const dataLength = part.inlineData.data?.length || 0;
+                    console.log(`[GeminiProvider] Found image part: ${dataLength} base64 chars, mime: ${part.inlineData.mimeType}`);
                     imageData = Buffer.from(part.inlineData.data, 'base64');
                 }
             }

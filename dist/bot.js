@@ -191,6 +191,8 @@ function setupBotEvents(instance) {
                 const imageAttachment = aiReply.imageData
                     ? new discord_js_1.AttachmentBuilder(aiReply.imageData, { name: 'generated.png' })
                     : undefined;
+                console.log(`[${config.name}] Response: ${replyText.length} chars, ${replyChunks.length} chunks, ` +
+                    `imageData: ${aiReply.imageData ? `${aiReply.imageData.length} bytes` : 'none'}`);
                 if (replyChunks.length > 0) {
                     const [firstChunk, ...restChunks] = replyChunks;
                     if (restChunks.length === 0) {
