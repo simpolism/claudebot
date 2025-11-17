@@ -8,11 +8,14 @@ import { chunkReplyText, convertOutputMentions } from './discord-utils';
 import { startDebugServer } from './debug-server';
 
 // ---------- Types ----------
-interface BotInstance {
+export interface BotInstance {
   config: BotConfig;
   client: Client;
   aiProvider: AIProvider;
 }
+
+// Export bot instances for debug server access
+export const botInstances: BotInstance[] = [];
 
 // ---------- Bot-to-Bot Exchange Tracking ----------
 const consecutiveBotMessages = new Map<string, number>();
@@ -371,6 +374,7 @@ async function main(): Promise<void> {
     const instance = createBotInstance(config);
     setupBotEvents(instance);
     instances.push(instance);
+    botInstances.push(instance); // Also export for debug server
   }
 
   // Login all bots

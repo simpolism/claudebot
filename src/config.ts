@@ -107,3 +107,14 @@ export function resolveConfig(botConfig: BotConfig) {
     systemPrompt: botConfig.systemPrompt ?? '',
   };
 }
+
+// Get the maximum context tokens across all active bots
+// Used for global block eviction decisions
+export function getMaxBotContextTokens(): number {
+  if (activeBotConfigs.length === 0) {
+    return globalConfig.maxContextTokens;
+  }
+  return Math.max(
+    ...activeBotConfigs.map((config) => config.maxContextTokens ?? globalConfig.maxContextTokens),
+  );
+}

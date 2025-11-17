@@ -1,6 +1,6 @@
 import { Client, Message, Collection } from 'discord.js';
 import * as fs from 'fs';
-import { globalConfig } from './config';
+import { globalConfig, getMaxBotContextTokens } from './config';
 
 // ---------- Types ----------
 
@@ -128,24 +128,32 @@ export function getContext(
   const messages = messagesByChannel.get(channelId) ?? [];
   const boundaries = blockBoundaries.get(channelId) ?? [];
 
+  // First, check if we need to evict blocks globally (based on LARGEST bot context)
+  const globalMaxTokens = getMaxBotContextTokens();
+  checkAndEvictGlobally(channelId, globalMaxTokens);
+
+  // Re-fetch after potential eviction
+  const currentMessages = messagesByChannel.get(channelId) ?? [];
+  const currentBoundaries = blockBoundaries.get(channelId) ?? [];
+
   // Build frozen blocks with their stored token counts
   const blockData: Array<{ text: string; tokens: number }> = [];
   let lastBlockEndIdx = -1;
 
-  for (const boundary of boundaries) {
-    const blockMessages = getMessagesInRange(messages, boundary.firstMessageId, boundary.lastMessageId);
+  for (const boundary of currentBoundaries) {
+    const blockMessages = getMessagesInRange(currentMessages, boundary.firstMessageId, boundary.lastMessageId);
     const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
     blockData.push({ text: blockText, tokens: boundary.tokenCount });
 
     // Track where this block ends in the array
-    const endIdx = messages.findIndex((m) => m.id === boundary.lastMessageId);
+    const endIdx = currentMessages.findIndex((m) => m.id === boundary.lastMessageId);
     if (endIdx !== -1) {
       lastBlockEndIdx = endIdx;
     }
   }
 
   // Build tail (messages after last frozen block)
-  const tailMessages = messages.slice(lastBlockEndIdx + 1);
+  const tailMessages = currentMessages.slice(lastBlockEndIdx + 1);
   const tailData: Array<{ text: string; tokens: number }> = [];
 
   for (const msg of tailMessages) {
@@ -156,21 +164,19 @@ export function getContext(
   }
 
   // Calculate totals
-  let blocksTokenCount = blockData.reduce((sum, b) => sum + b.tokens, 0);
-  let tailTokenCount = tailData.reduce((sum, t) => sum + t.tokens, 0);
-  let totalTokens = blocksTokenCount + tailTokenCount;
+  let totalTokens = blockData.reduce((sum, b) => sum + b.tokens, 0) + tailData.reduce((sum, t) => sum + t.tokens, 0);
 
-  // Trim if over budget (remove oldest blocks first, then oldest tail)
+  // Trim for THIS bot's specific budget (but don't modify global state)
   const finalBlockData = [...blockData];
   const finalTailData = [...tailData];
-  let evictedBlocks = 0;
-  let evictedTailMessages = 0;
+  let trimmedBlocks = 0;
+  let trimmedTailMessages = 0;
 
   while (totalTokens > maxTokens && finalBlockData.length > 0) {
     const removed = finalBlockData.shift();
     if (removed) {
       totalTokens -= removed.tokens;
-      evictedBlocks++;
+      trimmedBlocks++;
     }
   }
 
@@ -178,13 +184,13 @@ export function getContext(
     const removed = finalTailData.shift();
     if (removed) {
       totalTokens -= removed.tokens;
-      evictedTailMessages++;
+      trimmedTailMessages++;
     }
   }
 
-  if (evictedBlocks > 0 || evictedTailMessages > 0) {
+  if (trimmedBlocks > 0 || trimmedTailMessages > 0) {
     console.log(
-      `[getContext] Evicted ${evictedBlocks} blocks and ${evictedTailMessages} tail messages to fit ${maxTokens} token budget`,
+      `[getContext] Trimmed ${trimmedBlocks} blocks and ${trimmedTailMessages} tail messages for ${botDisplayName}'s ${maxTokens} token budget (global max: ${globalMaxTokens})`,
     );
   }
 
@@ -193,6 +199,46 @@ export function getContext(
     tail: finalTailData.map((t) => t.text),
     totalTokens,
   };
+}
+
+// Check if global state exceeds the largest bot's context and evict if needed
+function checkAndEvictGlobally(channelId: string, globalMaxTokens: number): void {
+  const messages = messagesByChannel.get(channelId) ?? [];
+  const boundaries = blockBoundaries.get(channelId) ?? [];
+
+  if (boundaries.length === 0) return;
+
+  // Calculate total tokens across all blocks + tail
+  let totalBlockTokens = boundaries.reduce((sum, b) => sum + b.tokenCount, 0);
+
+  // Find tail start
+  const lastBoundary = boundaries[boundaries.length - 1];
+  const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
+  const tailMessages = lastBoundaryIdx !== -1 ? messages.slice(lastBoundaryIdx + 1) : messages;
+
+  let tailTokens = 0;
+  for (const msg of tailMessages) {
+    tailTokens += estimateMessageTokens(msg.authorName, msg.content);
+  }
+
+  let totalTokens = totalBlockTokens + tailTokens;
+
+  // Evict oldest blocks if over global max
+  let blocksToEvict = 0;
+  let tokensAfterEviction = totalTokens;
+
+  for (const boundary of boundaries) {
+    if (tokensAfterEviction <= globalMaxTokens) break;
+    tokensAfterEviction -= boundary.tokenCount;
+    blocksToEvict++;
+  }
+
+  if (blocksToEvict > 0) {
+    console.log(
+      `[checkAndEvictGlobally] Total ${totalTokens} tokens exceeds global max ${globalMaxTokens}, evicting ${blocksToEvict} oldest blocks`,
+    );
+    cleanupEvictedBlocks(channelId, blocksToEvict);
+  }
 }
 
 function getMessagesInRange(
@@ -244,6 +290,43 @@ function formatMessages(messages: StoredMessage[], botUserId: string, botDisplay
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / Math.max(globalConfig.approxCharsPerToken, 1));
+}
+
+// ---------- Block Eviction Cleanup ----------
+
+function cleanupEvictedBlocks(channelId: string, numEvicted: number): void {
+  const boundaries = blockBoundaries.get(channelId);
+  const messages = messagesByChannel.get(channelId);
+  const messageIds = messageIdsByChannel.get(channelId);
+
+  if (!boundaries || numEvicted <= 0) return;
+
+  // Remove oldest boundaries
+  const evictedBoundaries = boundaries.splice(0, numEvicted);
+
+  console.log(`[cleanupEvictedBlocks] Removed ${evictedBoundaries.length} oldest blocks from ${channelId}`);
+
+  // Also trim messages that are no longer referenced
+  if (messages && messageIds && evictedBoundaries.length > 0) {
+    const lastEvictedBoundary = evictedBoundaries[evictedBoundaries.length - 1];
+    if (lastEvictedBoundary) {
+      const lastEvictedIdx = messages.findIndex((m) => m.id === lastEvictedBoundary.lastMessageId);
+      if (lastEvictedIdx !== -1) {
+        // Remove all messages up to and including the last evicted block
+        const removedMessages = messages.splice(0, lastEvictedIdx + 1);
+
+        // Update the deduplication set
+        for (const msg of removedMessages) {
+          messageIds.delete(msg.id);
+        }
+
+        console.log(`[cleanupEvictedBlocks] Trimmed ${removedMessages.length} messages from memory for ${channelId}`);
+      }
+    }
+  }
+
+  // Persist updated boundaries to disk
+  saveBoundariesToDisk();
 }
 
 // ---------- Block Freezing ----------
@@ -402,7 +485,16 @@ export async function loadHistoryFromDiscord(
       }
 
       const startTime = Date.now();
-      const messages = await fetchChannelHistory(channel, maxTokensPerChannel);
+
+      // Get oldest boundary message ID to ensure we fetch back far enough for cache consistency
+      const existingBoundaries = blockBoundaries.get(channelId) ?? [];
+      const oldestBoundaryMessageId = existingBoundaries.length > 0 ? existingBoundaries[0].firstMessageId : undefined;
+
+      if (oldestBoundaryMessageId) {
+        console.log(`[loadHistoryFromDiscord] ${channelId} has ${existingBoundaries.length} saved boundaries, ensuring fetch includes message ${oldestBoundaryMessageId}`);
+      }
+
+      const messages = await fetchChannelHistory(channel, maxTokensPerChannel, oldestBoundaryMessageId);
 
       // Initialize storage for this channel
       messagesByChannel.set(channelId, messages);
@@ -431,13 +523,16 @@ export async function loadHistoryFromDiscord(
 async function fetchChannelHistory(
   channel: Message['channel'] & { isTextBased(): boolean },
   maxTokens: number,
+  mustIncludeMessageId?: string,
 ): Promise<StoredMessage[]> {
   const messages: StoredMessage[] = [];
   let totalTokens = 0;
   let beforeCursor: string | undefined = undefined;
+  let foundRequiredMessage = !mustIncludeMessageId; // If no requirement, consider it found
 
   // Fetch backward from most recent
-  while (totalTokens < maxTokens) {
+  // Continue until: (hit token limit AND found required message) OR no more messages
+  while (!foundRequiredMessage || totalTokens < maxTokens) {
     const fetched: Collection<string, Message> = await channel.messages.fetch({
       limit: 100,
       before: beforeCursor,
@@ -457,6 +552,11 @@ async function fetchChannelHistory(
       const tokens = estimateMessageTokens(stored.authorName, stored.content);
       batch.push(stored);
       batchTokens += tokens;
+
+      // Check if we found the required message
+      if (mustIncludeMessageId && msg.id === mustIncludeMessageId) {
+        foundRequiredMessage = true;
+      }
     }
 
     // Prepend batch (older messages first)
@@ -469,8 +569,26 @@ async function fetchChannelHistory(
     if (fetched.size < 100) break;
   }
 
-  // Trim oldest if over budget
+  if (mustIncludeMessageId && !foundRequiredMessage) {
+    console.warn(
+      `[fetchChannelHistory] Required message ${mustIncludeMessageId} not found in history. ` +
+        `Boundaries may be invalidated.`,
+    );
+  }
+
+  // Trim oldest if over budget, but NEVER trim past the required message
   while (totalTokens > maxTokens && messages.length > 0) {
+    const oldestMessage = messages[0];
+    if (!oldestMessage) break;
+
+    // Don't trim if this is the required message or we haven't passed it yet
+    if (mustIncludeMessageId && oldestMessage.id === mustIncludeMessageId) {
+      console.log(
+        `[fetchChannelHistory] Stopping trim at required message ${mustIncludeMessageId} to preserve cache boundaries`,
+      );
+      break;
+    }
+
     const removed = messages.shift();
     if (removed) {
       totalTokens -= estimateMessageTokens(removed.authorName, removed.content);

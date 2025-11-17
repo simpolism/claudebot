@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activeBotConfigs = exports.botConfigs = exports.globalConfig = void 0;
 exports.resolveConfig = resolveConfig;
+exports.getMaxBotContextTokens = getMaxBotContextTokens;
 require("dotenv/config");
 // Global configuration shared across all bots
 function parseMainChannelIds() {
@@ -74,4 +75,12 @@ function resolveConfig(botConfig) {
         geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
         systemPrompt: botConfig.systemPrompt ?? '',
     };
+}
+// Get the maximum context tokens across all active bots
+// Used for global block eviction decisions
+function getMaxBotContextTokens() {
+    if (exports.activeBotConfigs.length === 0) {
+        return exports.globalConfig.maxContextTokens;
+    }
+    return Math.max(...exports.activeBotConfigs.map((config) => config.maxContextTokens ?? exports.globalConfig.maxContextTokens));
 }

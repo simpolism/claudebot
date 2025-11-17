@@ -4,9 +4,7 @@ Ideas for enhancing the bot framework while respecting IMP (Immanent Mind Plural
 
 ## First Steps
 
-- Bug: fix conversation cache handling to roll off when blocks are evicted.
 - Stop + restart reponse on simultaneous tag.
-- Add nano-banana for image creation.
 - Threading + history mgmt (maybe need actual database again).
 - Get tagging to work for backrooms creation.
 - Split config out into something modifiable at runtime, or something not checked-into repo.

@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.botInstances = void 0;
 require("dotenv/config");
 const discord_js_1 = require("discord.js");
 const providers_1 = require("./providers");
@@ -8,6 +9,8 @@ const message_store_1 = require("./message-store");
 const context_1 = require("./context");
 const discord_utils_1 = require("./discord-utils");
 const debug_server_1 = require("./debug-server");
+// Export bot instances for debug server access
+exports.botInstances = [];
 // ---------- Bot-to-Bot Exchange Tracking ----------
 const consecutiveBotMessages = new Map();
 const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
@@ -305,6 +308,7 @@ async function main() {
         const instance = createBotInstance(config);
         setupBotEvents(instance);
         instances.push(instance);
+        exports.botInstances.push(instance); // Also export for debug server
     }
     // Login all bots
     const loginPromises = instances.map(async (instance) => {
