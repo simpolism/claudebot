@@ -225,6 +225,56 @@ function checkAndFreezeBlocks(channelId: string): void {
   }
 }
 
+function freezeBlocksFromHistory(channelId: string): void {
+  const messages = messagesByChannel.get(channelId);
+  const boundaries = blockBoundaries.get(channelId);
+
+  if (!messages || !boundaries) return;
+
+  // Find where we need to start (after any existing boundaries)
+  let startIdx = 0;
+  if (boundaries.length > 0) {
+    const lastBoundary = boundaries[boundaries.length - 1];
+    const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
+    if (lastBoundaryIdx !== -1) {
+      startIdx = lastBoundaryIdx + 1;
+    }
+  }
+
+  // Freeze all complete blocks from history
+  let accumulatedTokens = 0;
+  let blockStartIdx = startIdx;
+  let blocksCreated = 0;
+
+  for (let i = startIdx; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg) continue;
+    const msgText = `${msg.authorName}: ${msg.content}`;
+    const tokens = estimateTokens(msgText) + 4;
+    accumulatedTokens += tokens;
+
+    if (accumulatedTokens >= DEFAULT_TOKENS_PER_BLOCK) {
+      const firstMsg = messages[blockStartIdx];
+      const lastMsg = messages[i];
+      if (firstMsg && lastMsg) {
+        boundaries.push({
+          firstMessageId: firstMsg.id,
+          lastMessageId: lastMsg.id,
+          tokenCount: accumulatedTokens,
+        });
+        blocksCreated++;
+      }
+      accumulatedTokens = 0;
+      blockStartIdx = i + 1;
+    }
+  }
+
+  if (blocksCreated > 0) {
+    console.log(`Frozen ${blocksCreated} blocks from history for ${channelId}`);
+    saveBoundariesToDisk();
+  }
+}
+
 // ---------- Disk Persistence (Boundaries Only) ----------
 
 export function loadBoundariesFromDisk(): void {
@@ -286,9 +336,13 @@ export async function loadHistoryFromDiscord(
       // Rebuild blocks according to saved boundaries
       rebuildBlocksFromBoundaries(channelId);
 
+      // Freeze any new blocks from loaded history
+      freezeBlocksFromHistory(channelId);
+
       const duration = Date.now() - startTime;
+      const boundaries = blockBoundaries.get(channelId) ?? [];
       console.log(
-        `Loaded ${messages.length} messages for ${channelId} in ${duration}ms`,
+        `Loaded ${messages.length} messages for ${channelId} in ${duration}ms (${boundaries.length} frozen blocks)`,
       );
     } catch (err) {
       console.error(`Failed to load history for ${channelId}:`, err);
