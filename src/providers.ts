@@ -448,8 +448,6 @@ class GeminiProvider implements AIProvider {
       },
     });
 
-    console.log('[GeminiProvider] Full API Response:', JSON.stringify(response, null, 2));
-
     // Extract text and image from response parts
     let textContent = '';
     let imageData: Buffer | undefined;
