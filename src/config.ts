@@ -54,6 +54,12 @@ export const botConfigs: BotConfig[] = [
     model: 'claude-haiku-4-5',
   },
   {
+    name: 'CL-KU',
+    discordToken: process.env.CLKU_DISCORD_TOKEN || '',
+    provider: 'anthropic',
+    model: 'claude-3-5-haiku-latest',
+  },
+  {
     name: 'K2',
     discordToken: process.env.KIMI_DISCORD_TOKEN || '',
     provider: 'openai',
