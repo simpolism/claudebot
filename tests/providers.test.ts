@@ -75,7 +75,7 @@ describe('OpenAIProvider message layout', () => {
     const messages = createMock.mock.calls[0][0].messages;
     expect(messages[messages.length - 1]).toEqual({
       role: 'assistant',
-      content: 'Alice: Hi\n\nBot:',
+      content: 'Alice: Hi\nBot:',
     });
   });
 

@@ -9,15 +9,15 @@ This is a **Discord bot framework that treats AI systems as conversation partici
 **File Organization:**
 ```
 src/
-├── bot.ts              # Main Discord client setup and event handling (347 lines)
-├── config.ts           # Configuration management and bot definitions (84 lines)
-├── context.ts          # Context fetching, caching assembly, tail management (492 lines)
-├── cache.ts            # Prompt cache persistence to JSON (166 lines)
-├── providers.ts        # AI provider abstraction (Anthropic/OpenAI) (427 lines)
-├── discord-utils.ts    # Discord formatting utilities (72 lines)
-└── types.ts            # Shared TypeScript types (35 lines)
+├── bot.ts              # Main Discord client setup and event handling
+├── config.ts           # Configuration management and bot definitions
+├── message-store.ts    # In-memory message storage and block management
+├── context.ts          # Context building wrapper (thin layer over message-store)
+├── providers.ts        # AI provider abstraction (Anthropic/OpenAI)
+├── discord-utils.ts    # Discord formatting utilities
+└── types.ts            # Shared TypeScript types
 
-conversation-cache.json # Auto-generated, stores cache metadata
+conversation-cache.json # Auto-generated, stores block boundaries only
 package.json            # Dependencies: discord.js, @anthropic-ai/sdk, openai
 ```
 
@@ -37,7 +37,7 @@ package.json            # Dependencies: discord.js, @anthropic-ai/sdk, openai
 **Initialization Flow:**
 
 1. **Startup (`main()`):**
-   - Loads conversation cache from disk: `loadCache()` (cache.ts)
+   - Loads block boundaries from disk: `loadBoundariesFromDisk()` (message-store.ts)
    - Logs configuration summary
    - Filters bots with missing tokens
 
@@ -84,165 +84,137 @@ MAIN_CHANNEL_IDS=...              # Whitelist channels (optional)
 
 ---
 
-## 3. Context Fetching Mechanism & MAX_CONTEXT_TOKENS
+## 3. Context Management (Simplified Architecture)
 
-**File:** `src/context.ts` (492 lines)
+**Files:** `src/message-store.ts` + `src/context.ts`
 
-**Core Concept:** Context is split into **stable cached blocks** (for cost savings) + **fresh tail** (latest messages).
+**Core Concept:** Simple in-memory message list per channel, fragmented into stable blocks for Anthropic caching.
 
-### Context Building Flow
+### Message Storage
 
-**Entry Point:** `buildConversationContext()` (lines 168-325)
-
+**In-Memory Structure:**
 ```typescript
-export async function buildConversationContext(params: {
-  channel: Message['channel'];
-  maxContextTokens: number;        // The budget!
-  client: Client;
-  botDisplayName: string;
-  cacheAccess?: CacheAccess;       // Injected for testing
-  fetchMessages?: MessageFetcher;  // Injected for testing
-}): Promise<ConversationData>
+const messagesByChannel = new Map<string, StoredMessage[]>();
+const blockBoundaries = new Map<string, BlockBoundary[]>();
+
+interface StoredMessage {
+  id: string;
+  channelId: string;
+  authorId: string;
+  authorName: string;  // Discord username
+  content: string;
+  timestamp: number;
+}
+
+interface BlockBoundary {
+  firstMessageId: string;
+  lastMessageId: string;
+  tokenCount: number;
+}
 ```
 
-### MAX_CONTEXT_TOKENS Usage
+### Flow
 
-1. **Budget Allocation (lines 189-222):**
-   - If in a **thread**: allocates ~50% to parent channel history, 50% to thread
-   - Uses constant `PARENT_CONTEXT_RATIO = 0.5`
-   - Parent context is cheap (already cached blocks)
+1. **On Startup:**
+   - Load block boundaries from disk (`conversation-cache.json`)
+   - Fetch history from Discord up to MAX_CONTEXT_TOKENS
+   - Freeze history into 30k token blocks
+   - Save updated boundaries to disk
 
-2. **Token Tracking (lines 232-246):**
-   - Calculates tokens used by existing cached blocks
-   - Sets fetch budget: `Math.max(threadBudget, GUARANTEED_TAIL_TOKENS)`
-   - **GUARANTEED_TAIL_TOKENS = 8000** (lines 19): ensures fresh tail never skipped
-   - Fetch budget = max of remaining budget OR guaranteed tail
+2. **On Every MessageCreate:**
+   - Append message to in-memory list
+   - Check if tail has 30k+ tokens → freeze new block
+   - Save boundaries to disk
 
-3. **Fetch Operation (lines 247-253):**
-   - Calls `fetchMessagesAfter()` with computed token budget
-   - Fetches new messages from Discord after the last cached message
-
-4. **Tail Assembly (lines 268-307):**
-   - Combines:
-     - Previously cached tail messages (from `tailCache` in-memory)
-     - Fresh messages from current fetch
-   - Trims tail to fit: `maxTailTokens = Math.max(threadBudget - channelCachedTokens, GUARANTEED_TAIL_TOKENS)`
-   - Removes oldest messages from tail if over budget
+3. **On Bot Mention (Build Context):**
+   - Get frozen blocks (slice by boundaries)
+   - Get tail (messages after last block)
+   - Format with bot's own name at query time
+   - Trim if over budget (remove oldest blocks first, then oldest tail)
 
 **Return Structure:**
 ```typescript
 export type ConversationData = {
-  cachedBlocks: string[];    // Pre-formatted stable blocks (should cache)
-  tail: SimpleMessage[];     // Fresh messages (variable, not cached)
+  cachedBlocks: string[];    // Frozen blocks with cache_control
+  tail: SimpleMessage[];     // Fresh messages (no cache_control)
 };
 ```
 
-### Message Fetching
+### Thread Handling
 
-**Function:** `fetchMessagesAfter()` (lines 355-423)
-
-- Fetches up to 100 messages at a time from Discord
-- Stops when token budget is met OR no more messages available
-- Formats each message: `"Author: content"`
-- Estimates tokens: `text.length / approxCharsPerToken`
-
-**Key Detail:** This always fetches a fresh tail even if cached blocks already fill the budget, ensuring the current mention never gets skipped.
+Threads now get **full parent context** (no arbitrary 50% split):
+- Include all parent channel blocks
+- Subtract parent tokens from budget
+- Thread gets remaining budget for its own messages
 
 ---
 
-## 4. Context Blocks & Rolling
+## 4. Block Freezing & Disk Persistence
 
-**File:** `src/cache.ts` (166 lines)
+**File:** `src/message-store.ts`
 
 ### Block Structure
 
-```typescript
-export interface CachedBlock {
-  text?: string;              // Full formatted text (can be undefined!)
-  firstMessageId: string;     // Range marker
-  lastMessageId: string;      // Range marker
-  tokenCount: number;         // Estimated token count
-}
+Blocks are defined by boundaries only:
 
-interface ChannelCache {
-  blocks: CachedBlock[];      // Array of blocks
-  lastProcessedId: string | null;
+```typescript
+interface BlockBoundary {
+  firstMessageId: string;
+  lastMessageId: string;
+  tokenCount: number;
 }
 ```
 
-### Block Persistence
+### Disk Persistence
 
-**Storage:** `conversation-cache.json` (auto-created)
-- Stores only metadata (message ID boundaries + token counts)
-- **Does NOT store text** on disk (text field omitted)
-- Text is hydrated on-demand from Discord API at startup
+**Storage:** `conversation-cache.json`
+- Stores **only boundaries** (no text)
+- Text reconstructed from in-memory messages at runtime
 
 **Example JSON:**
 ```json
 {
   "channels": {
-    "channel-123": {
-      "blocks": [
-        {
-          "firstMessageId": "90",
-          "lastMessageId": "200",
-          "tokenCount": 30000
-        }
-      ],
-      "lastProcessedId": "200"
-    }
+    "channel-123": [
+      {
+        "firstMessageId": "90",
+        "lastMessageId": "200",
+        "tokenCount": 30000
+      }
+    ]
   }
 }
 ```
 
-### Block Rolling (Creating New Blocks)
+### Block Freezing
 
-**Function:** `updateCache()` (lines 98-154)
-
-Blocks are created when they accumulate enough tokens:
+Blocks are frozen when tail accumulates 30k+ tokens:
 
 ```typescript
-export function updateCache(
-  channelId: string,
-  newMessages: Array<{ id: string; formattedText: string; tokens: number }>,
-  tokensPerBlock: number = DEFAULT_TOKENS_PER_BLOCK,  // 30000
-): void
+function checkAndFreezeBlocks(channelId: string): void {
+  // Find tail start (after last block boundary)
+  // Accumulate tokens
+  // When >= 30000 tokens: freeze block, save to disk
+}
 ```
 
-1. **Accumulation Phase:**
-   - Iterate through new messages
-   - Accumulate text + tokens
-   - Track first and last message ID of the accumulating block
+**Why freeze at 30k tokens?**
+- Large enough for stable Anthropic cache hits
+- Small enough to allow context trimming if needed
+- Byte-identical across API calls = cost savings
 
-2. **Roll Trigger (lines 127-142):**
-   - When accumulated tokens >= `DEFAULT_TOKENS_PER_BLOCK` (30000 tokens):
-     - Create new block with boundaries + token count
-     - Push to `channelCache.blocks`
-     - **Save JSON to disk**
-     - Reset accumulator for next block
+### Startup Block Freezing
 
-3. **Tail Remains Uncached:**
-   - Messages that don't fill a block stay in the "fresh tail"
-   - Will be cached on the NEXT roll
+On startup, after loading history:
 
-4. **Caching Strategy Benefit:**
-   - Old blocks: byte-identical, hit Anthropic's prompt cache
-   - New tail: changes frequently, sent fresh each time
-   - Cost optimization: cache hits on stable blocks
+```typescript
+function freezeBlocksFromHistory(channelId: string): void {
+  // Freeze all complete 30k blocks from loaded history
+  // Remaining messages become tail
+}
+```
 
-### Text Hydration
-
-**Function:** `hydrateCachedBlockTexts()` (lines 36-60)
-
-When blocks are loaded from cache:
-
-1. Block has `firstMessageId` and `lastMessageId` boundaries
-2. But `text` field is undefined
-3. On first use, fetch Discord messages in that range
-4. Reconstruct the exact formatted text
-5. Assign back to `block.text`
-
-**Why?** Saves disk space and keeps cache metadata tiny. Actual text is reconstructed from Discord's API.
+This ensures that historical conversations get proper block boundaries for caching.
 
 ---
 
@@ -341,24 +313,23 @@ Prevents AI from starting another speaker's line mid-response:
 
 ## 7. Thread Handling
 
-**File:** `context.ts` (lines 189-219)
+**File:** `context.ts`
 
 When a message is in a thread:
 
-1. **Parent Context (50% of budget):**
-   - Get parent channel's cached blocks
-   - Allocate ~50% of tokens to parent history
-   - Provides context on what started the thread
+1. **Parent Context (FULL budget):**
+   - Get all parent channel's cached blocks + tail
+   - No arbitrary 50% split anymore
+   - Provides complete context on what started the thread
 
 2. **Thread Budget:**
-   - Remaining 50% for current thread messages
+   - Remaining budget after parent context
+   - Thread accumulates its own messages normally
 
 3. **Benefits:**
-   - Thread responses aware of parent channel topic
+   - Thread responses have maximum parent context
    - Stable parent blocks reused (cache hits!)
-   - Thread can see why the conversation started
-
-**Example Test:** `context.test.ts` lines 279-340
+   - Thread can see complete channel history
 
 ---
 
@@ -374,13 +345,11 @@ When a message is in a thread:
 | `APPROX_CHARS_PER_TOKEN` | 4 | For token estimation |
 | `MAIN_CHANNEL_IDS` | (unset) | Whitelist channels (blank = all) |
 
-**In Code (`config.ts`):**
+**In Code:**
 
-- `globalConfig.maxContextTokens`: Soft limit for conversation budget
+- `globalConfig.maxContextTokens`: Soft limit for conversation budget (`config.ts`)
 - `globalConfig.discordMessageLimit`: 2000 (Discord's per-message limit)
-- `GUARANTEED_TAIL_TOKENS`: 8000 (always fetch at least this much fresh)
-- `DEFAULT_TOKENS_PER_BLOCK`: 30000 (when to roll a new cache block)
-- `PARENT_CONTEXT_RATIO`: 0.5 (50% budget for parent in threads)
+- `DEFAULT_TOKENS_PER_BLOCK`: 30000 (when to freeze a new cache block) (`message-store.ts`)
 
 ---
 
@@ -398,53 +367,62 @@ From README:
 
 ## 10. File Locations & Key Functions
 
-| What | Where | Lines |
-|------|-------|-------|
-| Main entry point | `src/bot.ts` | 293-347 |
-| Bot initialization | `src/bot.ts` | 139-173 |
-| Message handler | `src/bot.ts` | 183-289 |
-| Context building | `src/context.ts` | 168-325 |
-| Message fetching | `src/context.ts` | 355-423 |
-| Cache persistence | `src/cache.ts` | 98-154 |
-| Cache loading | `src/cache.ts` | 26-59 |
-| Anthropic provider | `src/providers.ts` | 50-197 |
-| OpenAI provider | `src/providers.ts` | 199-317 |
-| Config parsing | `src/config.ts` | 24-84 |
-| Discord formatting | `src/discord-utils.ts` | 4-72 |
+| What | Where |
+|------|-------|
+| Main entry point | `src/bot.ts` - `main()` |
+| Bot initialization | `src/bot.ts` - `createBotInstance()` |
+| Message handler | `src/bot.ts` - `MessageCreate` event |
+| In-memory storage | `src/message-store.ts` - `appendMessage()`, `getContext()` |
+| Block freezing | `src/message-store.ts` - `checkAndFreezeBlocks()` |
+| Boundary persistence | `src/message-store.ts` - `saveBoundariesToDisk()` |
+| History loading | `src/message-store.ts` - `loadHistoryFromDiscord()` |
+| Context building | `src/context.ts` - `buildConversationContext()` |
+| Speaker list | `src/message-store.ts` - `getChannelSpeakers()` |
+| Anthropic provider | `src/providers.ts` - `AnthropicProvider` |
+| OpenAI provider | `src/providers.ts` - `OpenAIProvider` |
+| Fragmentation guard | `src/providers.ts` - `FragmentationGuard` |
+| Config parsing | `src/config.ts` |
+| Discord formatting | `src/discord-utils.ts` |
 
 ---
 
 ## 11. Critical Sequences
 
 **Starting the System:**
-1. `main()` loads cache
+1. `main()` loads block boundaries from disk
 2. Creates bot instances
-3. Sets up event handlers
-4. Logs all in simultaneously
+3. Sets up event handlers (including MessageCreate append)
+4. Logs all bots in simultaneously
 5. Waits for `ClientReady` events
+6. Loads history from Discord for configured channels
+7. Freezes history into 30k blocks
 
 **Responding to a Mention:**
-1. `MessageCreate` event fires
-2. Track bot exchanges
-3. Build context (fetch + cache assembly)
-4. Send to provider (stream response)
-5. Convert mentions + chunk reply
-6. Post to Discord
+1. `MessageCreate` fires (message already appended to list)
+2. Track bot-to-bot exchanges
+3. Build context from in-memory list (instant - no fetches!)
+4. Get speaker list for fragmentation guard
+5. Send to provider (stream response)
+6. Convert mentions + chunk reply
+7. Post to Discord
 
 **Managing Context:**
-1. Load cached blocks from metadata
-2. Hydrate text from Discord if needed
-3. Fetch fresh tail with guaranteed minimum
-4. Trim tail to fit remaining budget
-5. Return `{cachedBlocks, tail}`
+1. Slice in-memory list by block boundaries
+2. Format messages with bot's own name
+3. Trim if over budget
+4. Return `{cachedBlocks, tail}`
 
-**Rolling Blocks:**
-1. Accumulate new messages
-2. When 30k tokens reached, create block
-3. Save block metadata to JSON
-4. Reset accumulator
-5. Next block starts fresh
+**Freezing Blocks:**
+1. Append message to list
+2. Check if tail >= 30k tokens
+3. If yes: create boundary (firstId, lastId, tokenCount)
+4. Save boundaries to disk
+5. Reset accumulator
 
 ---
 
-This architecture elegantly balances **cost optimization** (prompt caching), **conversation context** (multi-message history), and **natural interaction** (transcript format, mention conversion, bot-to-bot safety).
+This simplified architecture prioritizes:
+1. **Reply latency** - Context from memory, no Discord fetches
+2. **Maximum history** - Full context up to budget, no arbitrary drops
+3. **Cost efficiency** - Stable blocks for Anthropic cache hits
+4. **Simplicity** - Single source of truth, clear data flow

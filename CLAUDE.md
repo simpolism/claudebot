@@ -37,17 +37,24 @@ The disk cache is NOT meant to:
 - Discord API hydration for text content
 - More complex, multiple sources of truth
 
-## Known Issues
+## Known Issues (RESOLVED)
 
-1. **Tail cache complexity**: Two caches (disk + memory) that can desync
-2. **Per-bot formatting bug**: Bots share cache but format their own messages differently
-3. **50% thread budget**: Arbitrary limit on parent context
-4. **No startup prefetch**: Bots don't load context until first mention (FIXED)
-5. **Pagination bug**: Initial fetch only got 100 messages, not full history (FIXED)
+All major issues have been fixed in the simplified architecture:
+
+1. ~~**Tail cache complexity**~~ - FIXED: Now single in-memory message list per channel
+2. ~~**Per-bot formatting bug**~~ - FIXED: Raw data stored, formatted with correct bot name at query time
+3. ~~**50% thread budget**~~ - FIXED: Threads now get full parent context
+4. ~~**No startup prefetch**~~ - FIXED: History loaded on startup
+5. ~~**Pagination bug**~~ - FIXED: Properly fetches full history backward
+6. ~~**Fragmentation detection**~~ - FIXED: Uses actual Discord usernames, not text parsing
 
 ## Key Design Decisions
 
 - Block size: 30k tokens (stable enough for cache hits, not too large)
-- Tail: Messages not yet in a hardened block
-- Hydration: Reconstruct text from Discord using block boundaries
-- Format: "AuthorName: message content" per line
+- Tail: Messages not yet in a hardened block (in-memory only, not persisted)
+- Format: "AuthorName: message content" per line (single `\n` between messages)
+- Storage: Raw message data (authorId, authorName, content) stored in memory
+- Formatting: Done at query time using botDisplayName for bot's own messages
+- Disk persistence: Only block boundaries (firstMessageId, lastMessageId, tokenCount)
+- OpenAI transcript role: Prefer assistant role with prefill appended (single `\n` before prefill), unless images need user content blocks
+- Fragmentation guard: Uses actual Discord usernames from message store, not text parsing

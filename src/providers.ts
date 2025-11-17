@@ -244,8 +244,8 @@ class OpenAIProvider implements AIProvider {
       });
     }
 
-    const assistantText = transcriptText + `\n\n${botDisplayName}:`;
     if (this.supportsImageBlocks) {
+      // When images are supported, transcript must be in user content (for image_url blocks)
       const userContent: ChatCompletionContentPart[] = [
         {
           type: 'text' as const,
@@ -272,9 +272,11 @@ class OpenAIProvider implements AIProvider {
         content: botDisplayName + ':',
       });
     } else {
+      // Prefer transcript in assistant role with prefill appended
+      // This gives the model more natural continuation behavior
       messages.push({
         role: 'assistant',
-        content: assistantText,
+        content: transcriptText + `\n${botDisplayName}:`,
       });
     }
 
