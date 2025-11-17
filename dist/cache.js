@@ -57,7 +57,10 @@ function loadCache() {
                         lastMessageId: block.lastMessageId,
                         tokenCount: block.tokenCount,
                     })) || [];
-                    return [channelId, { blocks }];
+                    const lastProcessedId = channelCache.lastProcessedId ||
+                        blocks[blocks.length - 1]?.lastMessageId ||
+                        null;
+                    return [channelId, { blocks, lastProcessedId }];
                 })),
             };
             console.log(`Loaded cache with ${Object.keys(cacheStore.channels).length} channel(s)`);
@@ -83,6 +86,7 @@ function saveCache() {
                         lastMessageId: block.lastMessageId,
                         tokenCount: block.tokenCount,
                     })),
+                    lastProcessedId: channelCache.lastProcessedId,
                 },
             ])),
         };
@@ -108,7 +112,7 @@ function updateCache(channelId, newMessages, tokensPerBlock = DEFAULT_TOKENS_PER
     if (newMessages.length === 0)
         return;
     if (!cacheStore.channels[channelId]) {
-        cacheStore.channels[channelId] = { blocks: [] };
+        cacheStore.channels[channelId] = { blocks: [], lastProcessedId: null };
     }
     const channelCache = cacheStore.channels[channelId];
     // Accumulate new messages into text
@@ -142,7 +146,10 @@ function updateCache(channelId, newMessages, tokensPerBlock = DEFAULT_TOKENS_PER
     }
     // Don't cache the remaining tail - it will be the "fresh" part
     // Only save if we created new blocks
-    if (createdBlock) {
+    if (lastMessageId) {
+        channelCache.lastProcessedId = lastMessageId;
+    }
+    if (createdBlock || lastMessageId) {
         saveCache();
     }
 }

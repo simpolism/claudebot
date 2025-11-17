@@ -10,6 +10,7 @@ export interface CachedBlock {
 
 interface ChannelCache {
   blocks: CachedBlock[];
+  lastProcessedId: string | null;
 }
 
 interface CacheStore {
@@ -37,7 +38,11 @@ export function loadCache(): void {
                 lastMessageId: block.lastMessageId,
                 tokenCount: block.tokenCount,
               })) || [];
-            return [channelId, { blocks }];
+            const lastProcessedId =
+              channelCache.lastProcessedId ||
+              blocks[blocks.length - 1]?.lastMessageId ||
+              null;
+            return [channelId, { blocks, lastProcessedId }];
           }),
         ),
       };
@@ -66,6 +71,7 @@ function saveCache(): void {
               lastMessageId: block.lastMessageId,
               tokenCount: block.tokenCount,
             })),
+            lastProcessedId: channelCache.lastProcessedId,
           },
         ]),
       ),
@@ -97,7 +103,7 @@ export function updateCache(
   if (newMessages.length === 0) return;
 
   if (!cacheStore.channels[channelId]) {
-    cacheStore.channels[channelId] = { blocks: [] };
+    cacheStore.channels[channelId] = { blocks: [], lastProcessedId: null };
   }
 
   const channelCache = cacheStore.channels[channelId];
@@ -138,7 +144,11 @@ export function updateCache(
 
   // Don't cache the remaining tail - it will be the "fresh" part
   // Only save if we created new blocks
-  if (createdBlock) {
+  if (lastMessageId) {
+    channelCache.lastProcessedId = lastMessageId;
+  }
+
+  if (createdBlock || lastMessageId) {
     saveCache();
   }
 }
