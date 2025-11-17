@@ -376,32 +376,54 @@ class GeminiProvider implements AIProvider {
     const imagePattern = /(!\[image\]\([^\)]+\))/g;
     const segments = transcriptText.split(imagePattern);
 
-    for (const segment of segments) {
+    // Find all image markers and only fetch the last N
+    const MAX_HISTORICAL_IMAGES = 4;
+    const imageMarkerIndices: number[] = [];
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i].match(/^!\[image\]\([^\)]+\)$/)) {
+        imageMarkerIndices.push(i);
+      }
+    }
+
+    // Only fetch the last N images
+    const imagesToFetch = new Set(imageMarkerIndices.slice(-MAX_HISTORICAL_IMAGES));
+    const skippedCount = imageMarkerIndices.length - imagesToFetch.size;
+    if (skippedCount > 0) {
+      console.log(`[GeminiProvider] Skipping ${skippedCount} older images, fetching last ${imagesToFetch.size}`);
+    }
+
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
       const imageMatch = segment.match(/^!\[image\]\(([^\)]+)\)$/);
 
       if (imageMatch) {
-        // This is an image marker - fetch and insert actual image
-        const url = imageMatch[1];
-        try {
-          const response = await fetch(url);
-          if (response.ok) {
-            const buffer = await response.arrayBuffer();
-            const base64 = Buffer.from(buffer).toString('base64');
-            const mimeType = response.headers.get('content-type') || 'image/png';
+        if (imagesToFetch.has(i)) {
+          // This is one of the last N images - fetch it
+          const url = imageMatch[1];
+          try {
+            const response = await fetch(url);
+            if (response.ok) {
+              const buffer = await response.arrayBuffer();
+              const base64 = Buffer.from(buffer).toString('base64');
+              const mimeType = response.headers.get('content-type') || 'image/png';
 
-            contentParts.push({
-              inlineData: {
-                mimeType,
-                data: base64,
-              },
-            });
-          } else {
-            // Failed to fetch, keep as text marker
+              contentParts.push({
+                inlineData: {
+                  mimeType,
+                  data: base64,
+                },
+              });
+            } else {
+              // Failed to fetch, keep as text marker
+              contentParts.push({ text: segment });
+            }
+          } catch (err) {
+            console.warn(`[GeminiProvider] Failed to fetch image ${url}:`, err);
+            // Keep as text marker on error
             contentParts.push({ text: segment });
           }
-        } catch (err) {
-          console.warn(`[GeminiProvider] Failed to fetch image ${url}:`, err);
-          // Keep as text marker on error
+        } else {
+          // Skip older images, keep as text marker
           contentParts.push({ text: segment });
         }
       } else if (segment) {
