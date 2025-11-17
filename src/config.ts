@@ -67,6 +67,7 @@ export const botConfigs: BotConfig[] = [
     model: 'gemini-2.5-flash-image',
     geminiApiKey: process.env.GOOGLE_API_KEY || '',
     geminiOutputMode: 'both', // Can generate both text and images
+    maxContextTokens: 30000,
   },
 ];
 
