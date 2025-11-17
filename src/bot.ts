@@ -283,16 +283,22 @@ function setupBotEvents(instance: BotInstance): void {
 
         // Append bot's own replies to the message store
         for (const sentMsg of sentMessages) {
-          let content = sentMsg.content || '(empty message)';
+          let content = sentMsg.content || '';
 
           // Append image URLs from attachments for vision context
           if (sentMsg.attachments.size > 0) {
             const imageUrls = [...sentMsg.attachments.values()]
               .filter((a) => a.contentType?.startsWith('image/'))
-              .map((a) => `\n![image](${a.url})`);
+              .map((a) => `![image](${a.url})`);
             if (imageUrls.length > 0) {
-              content += imageUrls.join('');
+              // If no text content, just use image markers; otherwise append with newline
+              content = content ? content + '\n' + imageUrls.join('\n') : imageUrls.join('\n');
             }
+          }
+
+          // Fallback if truly empty
+          if (!content) {
+            content = '(empty message)';
           }
 
           const stored: StoredMessage = {

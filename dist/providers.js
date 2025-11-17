@@ -352,7 +352,7 @@ class GeminiProvider {
         if (textContent) {
             textContent = guard.inspect(textContent);
         }
-        const finalText = textContent.trim() || (imageData ? '[Generated image]' : '(no response)');
+        const finalText = textContent.trim() || (imageData ? '' : '(no response)');
         return {
             text: finalText,
             imageData,

@@ -70,15 +70,20 @@ function estimateMessageTokens(authorName, content) {
     return estimateTokens(`${authorName}: ${content}`) + 4; // +4 for message overhead
 }
 function messageToStored(message) {
-    let content = message.content || '(empty message)';
+    let content = message.content || '';
     // Append image URLs from attachments for vision context
     if (message.attachments.size > 0) {
         const imageUrls = [...message.attachments.values()]
             .filter((a) => a.contentType?.startsWith('image/'))
-            .map((a) => `\n![image](${a.url})`);
+            .map((a) => `![image](${a.url})`);
         if (imageUrls.length > 0) {
-            content += imageUrls.join('');
+            // If no text content, just use image markers; otherwise append with newline
+            content = content ? content + '\n' + imageUrls.join('\n') : imageUrls.join('\n');
         }
+    }
+    // Fallback if truly empty
+    if (!content) {
+        content = '(empty message)';
     }
     return {
         id: message.id,
