@@ -37,6 +37,10 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / Math.max(globalConfig.approxCharsPerToken, 1));
 }
 
+function estimateMessageTokens(authorName: string, content: string): number {
+  return estimateTokens(`${authorName}: ${content}`) + 4;
+}
+
 function getChannelDebugInfo(channelId: string): ChannelDebugInfo {
   const messages = getChannelMessages(channelId);
   const boundaries = getBlockBoundaries(channelId);
@@ -75,7 +79,7 @@ function getChannelDebugInfo(channelId: string): ChannelDebugInfo {
   const tailMessages = messages.slice(tailStartIdx);
   let tailTokens = 0;
   for (const msg of tailMessages) {
-    tailTokens += estimateTokens(`${msg.authorName}: ${msg.content}`) + 4;
+    tailTokens += estimateMessageTokens(msg.authorName, msg.content);
   }
 
   const recentTail = tailMessages.slice(-10).map((msg) => ({

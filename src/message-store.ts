@@ -31,60 +31,58 @@ const DEFAULT_TOKENS_PER_BLOCK = 30000;
 // ---------- In-Memory Storage ----------
 
 const messagesByChannel = new Map<string, StoredMessage[]>();
+const messageIdsByChannel = new Map<string, Set<string>>(); // O(1) deduplication
 const blockBoundaries = new Map<string, BlockBoundary[]>();
 
+// ---------- Helper Functions ----------
 
-// ---------- Message Management ----------
-
-export function appendMessage(message: Message): void {
-  const channelId = message.channel.id;
-
+function ensureChannelInitialized(channelId: string): void {
   if (!messagesByChannel.has(channelId)) {
     messagesByChannel.set(channelId, []);
+  }
+  if (!messageIdsByChannel.has(channelId)) {
+    messageIdsByChannel.set(channelId, new Set());
   }
   if (!blockBoundaries.has(channelId)) {
     blockBoundaries.set(channelId, []);
   }
+}
 
-  const messages = messagesByChannel.get(channelId)!;
+function estimateMessageTokens(authorName: string, content: string): number {
+  return estimateTokens(`${authorName}: ${content}`) + 4; // +4 for message overhead
+}
 
-  // Deduplicate: skip if message ID already exists
-  if (messages.some((m) => m.id === message.id)) {
-    return;
-  }
-
-  const stored: StoredMessage = {
+function messageToStored(message: Message): StoredMessage {
+  return {
     id: message.id,
-    channelId,
+    channelId: message.channel.id,
     authorId: message.author.id,
     authorName: message.author.username ?? message.author.globalName ?? message.author.tag,
     content: message.content || '(empty message)',
     timestamp: message.createdTimestamp,
   };
-
-  messages.push(stored);
-  checkAndFreezeBlocks(channelId);
 }
+
+// ---------- Message Management ----------
 
 export function appendStoredMessage(stored: StoredMessage): void {
   const channelId = stored.channelId;
+  ensureChannelInitialized(channelId);
 
-  if (!messagesByChannel.has(channelId)) {
-    messagesByChannel.set(channelId, []);
-  }
-  if (!blockBoundaries.has(channelId)) {
-    blockBoundaries.set(channelId, []);
-  }
+  const messageIds = messageIdsByChannel.get(channelId)!;
 
-  const messages = messagesByChannel.get(channelId)!;
-
-  // Deduplicate: skip if message ID already exists
-  if (messages.some((m) => m.id === stored.id)) {
+  // O(1) deduplication
+  if (messageIds.has(stored.id)) {
     return;
   }
 
-  messages.push(stored);
+  messageIds.add(stored.id);
+  messagesByChannel.get(channelId)!.push(stored);
   checkAndFreezeBlocks(channelId);
+}
+
+export function appendMessage(message: Message): void {
+  appendStoredMessage(messageToStored(message));
 }
 
 export function getChannelMessages(channelId: string): StoredMessage[] {
@@ -134,7 +132,8 @@ export function getContext(
 
   for (const msg of tailMessages) {
     const formatted = formatMessage(msg, botUserId, botDisplayName);
-    const tokens = estimateTokens(formatted) + 4; // +4 for overhead, consistent with freeze
+    const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
+    const tokens = estimateMessageTokens(authorName, msg.content);
     tailData.push({ text: formatted, tokens });
   }
 
@@ -231,103 +230,48 @@ function estimateTokens(text: string): number {
 
 // ---------- Block Freezing ----------
 
-function checkAndFreezeBlocks(channelId: string): void {
+interface FreezeOptions {
+  persistAfterEach?: boolean; // Save to disk after each block (for runtime)
+  verbose?: boolean; // Detailed logging (for runtime)
+  source?: string; // Label for logs
+}
+
+function freezeBlocks(channelId: string, options: FreezeOptions = {}): number {
+  const { persistAfterEach = false, verbose = false, source = 'freezeBlocks' } = options;
+
   const messages = messagesByChannel.get(channelId);
   const boundaries = blockBoundaries.get(channelId);
 
-  if (!messages || !boundaries) return;
+  if (!messages || !boundaries) return 0;
 
-  // Find where tail starts
+  // Find where tail starts (after last frozen block)
   let tailStartIdx = 0;
   if (boundaries.length > 0) {
     const lastBoundary = boundaries[boundaries.length - 1];
     const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
     if (lastBoundaryIdx !== -1) {
       tailStartIdx = lastBoundaryIdx + 1;
-    } else {
+    } else if (verbose) {
       console.error(
-        `[checkAndFreezeBlocks] CRITICAL: lastBoundary.lastMessageId ${lastBoundary.lastMessageId} not found in messages!`,
+        `[${source}] CRITICAL: lastBoundary.lastMessageId ${lastBoundary.lastMessageId} not found in messages!`,
       );
     }
   }
 
-  // Accumulate tail tokens
+  // Accumulate tail tokens and freeze when threshold reached
   let accumulatedTokens = 0;
   let blockStartIdx = tailStartIdx;
   let messagesInBlock = 0;
+  let blocksCreated = 0;
 
   for (let i = tailStartIdx; i < messages.length; i++) {
     const msg = messages[i];
     if (!msg) continue;
-    const msgText = `${msg.authorName}: ${msg.content}`;
-    const tokens = estimateTokens(msgText) + 4; // +4 for overhead
+    const tokens = estimateMessageTokens(msg.authorName, msg.content);
     accumulatedTokens += tokens;
     messagesInBlock++;
 
     // Freeze block when threshold reached
-    if (accumulatedTokens >= DEFAULT_TOKENS_PER_BLOCK) {
-      const firstMsg = messages[blockStartIdx];
-      const lastMsg = messages[i];
-      if (firstMsg && lastMsg) {
-        const newBoundary = {
-          firstMessageId: firstMsg.id,
-          lastMessageId: lastMsg.id,
-          tokenCount: accumulatedTokens,
-        };
-        boundaries.push(newBoundary);
-        console.log(
-          `[checkAndFreezeBlocks] Frozen block #${boundaries.length} for ${channelId}: ` +
-            `${messagesInBlock} messages, ~${accumulatedTokens} tokens, ` +
-            `IDs ${firstMsg.id}..${lastMsg.id}`,
-        );
-
-        // Debug: Show total state after freeze
-        const totalBlockTokens = boundaries.reduce((sum, b) => sum + b.tokenCount, 0);
-        const remainingTail = messages.length - i - 1;
-        console.log(
-          `[checkAndFreezeBlocks] State: ${boundaries.length} blocks (~${totalBlockTokens} tokens), ` +
-            `${remainingTail} messages in tail`,
-        );
-
-        saveBoundariesToDisk();
-      }
-
-      // Reset for next potential block
-      accumulatedTokens = 0;
-      blockStartIdx = i + 1;
-      messagesInBlock = 0;
-    }
-  }
-}
-
-function freezeBlocksFromHistory(channelId: string): void {
-  const messages = messagesByChannel.get(channelId);
-  const boundaries = blockBoundaries.get(channelId);
-
-  if (!messages || !boundaries) return;
-
-  // Find where we need to start (after any existing boundaries)
-  let startIdx = 0;
-  if (boundaries.length > 0) {
-    const lastBoundary = boundaries[boundaries.length - 1];
-    const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
-    if (lastBoundaryIdx !== -1) {
-      startIdx = lastBoundaryIdx + 1;
-    }
-  }
-
-  // Freeze all complete blocks from history
-  let accumulatedTokens = 0;
-  let blockStartIdx = startIdx;
-  let blocksCreated = 0;
-
-  for (let i = startIdx; i < messages.length; i++) {
-    const msg = messages[i];
-    if (!msg) continue;
-    const msgText = `${msg.authorName}: ${msg.content}`;
-    const tokens = estimateTokens(msgText) + 4;
-    accumulatedTokens += tokens;
-
     if (accumulatedTokens >= DEFAULT_TOKENS_PER_BLOCK) {
       const firstMsg = messages[blockStartIdx];
       const lastMsg = messages[i];
@@ -338,11 +282,51 @@ function freezeBlocksFromHistory(channelId: string): void {
           tokenCount: accumulatedTokens,
         });
         blocksCreated++;
+
+        if (verbose) {
+          console.log(
+            `[${source}] Frozen block #${boundaries.length} for ${channelId}: ` +
+              `${messagesInBlock} messages, ~${accumulatedTokens} tokens, ` +
+              `IDs ${firstMsg.id}..${lastMsg.id}`,
+          );
+
+          const totalBlockTokens = boundaries.reduce((sum, b) => sum + b.tokenCount, 0);
+          const remainingTail = messages.length - i - 1;
+          console.log(
+            `[${source}] State: ${boundaries.length} blocks (~${totalBlockTokens} tokens), ` +
+              `${remainingTail} messages in tail`,
+          );
+        }
+
+        if (persistAfterEach) {
+          saveBoundariesToDisk();
+        }
       }
+
+      // Reset for next potential block
       accumulatedTokens = 0;
       blockStartIdx = i + 1;
+      messagesInBlock = 0;
     }
   }
+
+  return blocksCreated;
+}
+
+function checkAndFreezeBlocks(channelId: string): void {
+  freezeBlocks(channelId, {
+    persistAfterEach: true,
+    verbose: true,
+    source: 'checkAndFreezeBlocks',
+  });
+}
+
+function freezeBlocksFromHistory(channelId: string): void {
+  const blocksCreated = freezeBlocks(channelId, {
+    persistAfterEach: false,
+    verbose: false,
+    source: 'freezeBlocksFromHistory',
+  });
 
   if (blocksCreated > 0) {
     console.log(`Frozen ${blocksCreated} blocks from history for ${channelId}`);
@@ -404,6 +388,7 @@ export async function loadHistoryFromDiscord(
 
       // Initialize storage for this channel
       messagesByChannel.set(channelId, messages);
+      messageIdsByChannel.set(channelId, new Set(messages.map((m) => m.id)));
       if (!blockBoundaries.has(channelId)) {
         blockBoundaries.set(channelId, []);
       }
@@ -450,15 +435,8 @@ async function fetchChannelHistory(
     let batchTokens = 0;
 
     for (const msg of sorted) {
-      const stored: StoredMessage = {
-        id: msg.id,
-        channelId: channel.id,
-        authorId: msg.author.id,
-        authorName: msg.author.username ?? msg.author.globalName ?? msg.author.tag,
-        content: msg.content || '(empty message)',
-        timestamp: msg.createdTimestamp,
-      };
-      const tokens = estimateTokens(`${stored.authorName}: ${stored.content}`) + 4;
+      const stored = messageToStored(msg);
+      const tokens = estimateMessageTokens(stored.authorName, stored.content);
       batch.push(stored);
       batchTokens += tokens;
     }
@@ -477,7 +455,7 @@ async function fetchChannelHistory(
   while (totalTokens > maxTokens && messages.length > 0) {
     const removed = messages.shift();
     if (removed) {
-      totalTokens -= estimateTokens(`${removed.authorName}: ${removed.content}`) + 4;
+      totalTokens -= estimateMessageTokens(removed.authorName, removed.content);
     }
   }
 
@@ -518,11 +496,13 @@ function rebuildBlocksFromBoundaries(channelId: string): void {
 
 export function clearChannel(channelId: string): void {
   messagesByChannel.delete(channelId);
+  messageIdsByChannel.delete(channelId);
   blockBoundaries.delete(channelId);
 }
 
 export function clearAll(): void {
   messagesByChannel.clear();
+  messageIdsByChannel.clear();
   blockBoundaries.clear();
 }
 
