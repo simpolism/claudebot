@@ -2,6 +2,10 @@
 
 Ideas for enhancing the bot framework while respecting IMP (Immanent Mind Pluralism) principles.
 
+## Gemini Flash Image
+
+Add nano-banana for image creation.
+
 ## Non-Verbal Presence
 
 Currently the bot only speaks when mentioned. Consider allowing non-verbal participation:
