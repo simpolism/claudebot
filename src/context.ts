@@ -17,7 +17,20 @@ export function buildConversationContext(params: {
   }
 
   const botUserId = client.user.id;
-  const channelResult = getContext(channel.id, maxContextTokens, botUserId, botDisplayName);
+
+  // Detect if this is a thread
+  const isThread = channel.isThread();
+  const threadId = isThread ? channel.id : null;
+  const parentChannelId = isThread ? channel.parentId : undefined;
+
+  const channelResult = getContext(
+    channel.id,
+    maxContextTokens,
+    botUserId,
+    botDisplayName,
+    threadId,
+    parentChannelId ?? undefined
+  );
 
   // Convert tail strings to SimpleMessage format
   const tail: SimpleMessage[] = channelResult.tail.map((content) => ({
@@ -25,8 +38,9 @@ export function buildConversationContext(params: {
     content,
   }));
 
+  const contextType = isThread ? `Thread (with parent blocks)` : 'Channel';
   console.log(
-    `[${botDisplayName}] Channel conversation: ${channelResult.blocks.length} cached blocks (~${channelResult.totalTokens} tokens) + ${tail.length} tail messages`,
+    `[${botDisplayName}] ${contextType} conversation: ${channelResult.blocks.length} cached blocks (~${channelResult.totalTokens} tokens) + ${tail.length} tail messages`,
   );
 
   return {

@@ -117,7 +117,9 @@ function buildPayloadPreview(channelId, botName) {
     const botUserId = instance.client.user.id;
     const botDisplayName = instance.client.user.username ?? instance.client.user.globalName ?? instance.client.user.tag ?? 'Bot';
     const resolved = (0, config_1.resolveConfig)(instance.config);
-    const contextResult = (0, message_store_1.getContext)(channelId, resolved.maxContextTokens, botUserId, botDisplayName);
+    // Note: Debug server shows channel context, not thread context
+    // To support threads, would need to detect thread and pass threadId/parentChannelId
+    const contextResult = (0, message_store_1.getContext)(channelId, resolved.maxContextTokens, botUserId, botDisplayName, null, undefined);
     // Convert to SimpleMessage format (as done in context.ts)
     const tail = contextResult.tail.map((content) => ({
         role: content.startsWith(`${botDisplayName}:`) ? 'assistant' : 'user',

@@ -136,30 +136,46 @@ function getChannelMessages(channelId) {
 function getBlockBoundaries(channelId) {
     return blockBoundaries.get(channelId) ?? [];
 }
-function getContext(channelId, maxTokens, botUserId, botDisplayName) {
-    const messages = messagesByChannel.get(channelId) ?? [];
-    const boundaries = blockBoundaries.get(channelId) ?? [];
+function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, parentChannelId) {
+    // For threads: use parent's blocks + thread's tail
+    // For channels: use channel's blocks + tail
+    const isThreadContext = threadId != null && parentChannelId != null;
+    const boundaryChannelId = isThreadContext ? parentChannelId : channelId;
+    const messageChannelId = channelId; // Always get messages from the actual channel/thread
+    const messages = messagesByChannel.get(messageChannelId) ?? [];
+    const boundaries = blockBoundaries.get(boundaryChannelId) ?? [];
     // First, check if we need to evict blocks globally (based on LARGEST bot context)
     const globalMaxTokens = (0, config_1.getMaxBotContextTokens)();
-    checkAndEvictGlobally(channelId, globalMaxTokens);
+    checkAndEvictGlobally(boundaryChannelId, globalMaxTokens);
     // Re-fetch after potential eviction
-    const currentMessages = messagesByChannel.get(channelId) ?? [];
-    const currentBoundaries = blockBoundaries.get(channelId) ?? [];
+    const currentMessages = messagesByChannel.get(messageChannelId) ?? [];
+    const currentBoundaries = blockBoundaries.get(boundaryChannelId) ?? [];
     // Build frozen blocks with their stored token counts
+    // For threads: these are the parent's cached blocks
     const blockData = [];
-    let lastBlockEndIdx = -1;
-    for (const boundary of currentBoundaries) {
-        const blockMessages = getMessagesInRange(currentMessages, boundary.firstMessageId, boundary.lastMessageId);
-        const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
-        blockData.push({ text: blockText, tokens: boundary.tokenCount });
-        // Track where this block ends in the array
-        const endIdx = currentMessages.findIndex((m) => m.id === boundary.lastMessageId);
-        if (endIdx !== -1) {
-            lastBlockEndIdx = endIdx;
+    if (isThreadContext) {
+        // For threads: Get parent channel messages to build parent blocks
+        const parentMessages = messagesByChannel.get(parentChannelId) ?? [];
+        for (const boundary of currentBoundaries) {
+            const blockMessages = getMessagesInRange(parentMessages, boundary.firstMessageId, boundary.lastMessageId);
+            const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
+            blockData.push({ text: blockText, tokens: boundary.tokenCount });
+        }
+    }
+    else {
+        // For regular channels: Use channel's own blocks
+        for (const boundary of currentBoundaries) {
+            const blockMessages = getMessagesInRange(currentMessages, boundary.firstMessageId, boundary.lastMessageId);
+            const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
+            blockData.push({ text: blockText, tokens: boundary.tokenCount });
         }
     }
     // Build tail (messages after last frozen block)
-    const tailMessages = currentMessages.slice(lastBlockEndIdx + 1);
+    // For threads: all thread messages (threads don't have their own blocks yet)
+    // For channels: messages after last block
+    const tailMessages = isThreadContext ? currentMessages : currentMessages.slice(currentBoundaries.length > 0
+        ? currentMessages.findIndex((m) => m.id === currentBoundaries[currentBoundaries.length - 1]?.lastMessageId) + 1
+        : 0);
     const tailData = [];
     for (const msg of tailMessages) {
         const formatted = formatMessage(msg, botUserId, botDisplayName);

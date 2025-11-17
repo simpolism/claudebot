@@ -13,13 +13,18 @@ function buildConversationContext(params) {
         return { cachedBlocks: [], tail: [] };
     }
     const botUserId = client.user.id;
-    const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName);
+    // Detect if this is a thread
+    const isThread = channel.isThread();
+    const threadId = isThread ? channel.id : null;
+    const parentChannelId = isThread ? channel.parentId : undefined;
+    const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName, threadId, parentChannelId ?? undefined);
     // Convert tail strings to SimpleMessage format
     const tail = channelResult.tail.map((content) => ({
         role: content.startsWith(`${botDisplayName}:`) ? 'assistant' : 'user',
         content,
     }));
-    console.log(`[${botDisplayName}] Channel conversation: ${channelResult.blocks.length} cached blocks (~${channelResult.totalTokens} tokens) + ${tail.length} tail messages`);
+    const contextType = isThread ? `Thread (with parent blocks)` : 'Channel';
+    console.log(`[${botDisplayName}] ${contextType} conversation: ${channelResult.blocks.length} cached blocks (~${channelResult.totalTokens} tokens) + ${tail.length} tail messages`);
     return {
         cachedBlocks: channelResult.blocks,
         tail,

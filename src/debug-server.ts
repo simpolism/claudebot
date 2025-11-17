@@ -148,7 +148,9 @@ function buildPayloadPreview(channelId: string, botName: string): BotPayloadPrev
   const botDisplayName = instance.client.user.username ?? instance.client.user.globalName ?? instance.client.user.tag ?? 'Bot';
   const resolved = resolveConfig(instance.config);
 
-  const contextResult = getContext(channelId, resolved.maxContextTokens, botUserId, botDisplayName);
+  // Note: Debug server shows channel context, not thread context
+  // To support threads, would need to detect thread and pass threadId/parentChannelId
+  const contextResult = getContext(channelId, resolved.maxContextTokens, botUserId, botDisplayName, null, undefined);
 
   // Convert to SimpleMessage format (as done in context.ts)
   const tail: SimpleMessage[] = contextResult.tail.map((content) => ({
