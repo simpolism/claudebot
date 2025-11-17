@@ -6,7 +6,7 @@ import type {
   ChatCompletionContentPart,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions/completions';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import {
   ClaudeContentBlock,
   ImageBlock,
@@ -323,7 +323,7 @@ class OpenAIProvider implements AIProvider {
 }
 
 class GeminiProvider implements AIProvider {
-  private client: GoogleGenerativeAI;
+  private client: GoogleGenAI;
   private systemPrompt: string;
   private model: string;
   private outputMode: 'text' | 'image' | 'both';
@@ -336,7 +336,7 @@ class GeminiProvider implements AIProvider {
     this.systemPrompt = options.systemPrompt;
     this.model = options.geminiModel;
     this.outputMode = options.geminiOutputMode || 'both';
-    this.client = new GoogleGenerativeAI(apiKey);
+    this.client = new GoogleGenAI({ apiKey });
   }
 
   async send(params: ProviderRequest): Promise<AIResponse> {
@@ -358,13 +358,6 @@ class GeminiProvider implements AIProvider {
     // Configure response modalities based on output mode
     const responseModalities: Array<'Text' | 'Image'> =
       this.outputMode === 'image' ? ['Image'] : this.outputMode === 'text' ? ['Text'] : ['Text', 'Image'];
-
-    const generativeModel = this.client.getGenerativeModel({
-      model: this.model,
-      generationConfig: {
-        responseModalities,
-      } as any, // Type definition may not include responseModalities yet
-    });
 
     // Build interleaved content parts with images inline
     const contentParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
@@ -453,31 +446,32 @@ class GeminiProvider implements AIProvider {
     }
 
     console.log(`[GeminiProvider] Sending ${contentParts.length} content parts to model`);
-    const result = await generativeModel.generateContent(contentParts);
-    const response = result.response;
+
+    const response = await this.client.models.generateContent({
+      model: this.model,
+      contents: contentParts,
+      config: {
+        responseModalities,
+      },
+    });
 
     // Extract text and image from response parts
     let textContent = '';
     let imageData: Buffer | undefined;
 
-    const candidateCount = response.candidates?.length || 0;
-    console.log(`[GeminiProvider] Received ${candidateCount} candidates`);
+    const partCount = response.candidates?.[0]?.content?.parts?.length || 0;
+    console.log(`[GeminiProvider] Received response with ${partCount} parts`);
 
-    for (const candidate of response.candidates || []) {
-      const partCount = candidate.content?.parts?.length || 0;
-      console.log(`[GeminiProvider] Candidate has ${partCount} parts`);
-
-      for (const part of candidate.content?.parts || []) {
-        if ('text' in part && part.text) {
-          console.log(`[GeminiProvider] Found text part: ${part.text.length} chars`);
-          textContent += part.text;
-        }
-        if ('inlineData' in part && part.inlineData) {
-          // Convert base64 to Buffer
-          const dataLength = part.inlineData.data?.length || 0;
-          console.log(`[GeminiProvider] Found image part: ${dataLength} base64 chars, mime: ${part.inlineData.mimeType}`);
-          imageData = Buffer.from(part.inlineData.data, 'base64');
-        }
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.text) {
+        console.log(`[GeminiProvider] Found text part: ${part.text.length} chars`);
+        textContent += part.text;
+      }
+      if (part.inlineData) {
+        // Convert base64 to Buffer
+        const dataLength = part.inlineData.data?.length || 0;
+        console.log(`[GeminiProvider] Found image part: ${dataLength} base64 chars, mime: ${part.inlineData.mimeType}`);
+        imageData = Buffer.from(part.inlineData.data as string, 'base64');
       }
     }
 
