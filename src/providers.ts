@@ -33,6 +33,7 @@ type ProviderRequest = {
   conversationData: ConversationData;
   botDisplayName: string;
   imageBlocks: ImageBlock[];
+  otherSpeakers: string[];
 };
 
 export interface AIProvider {
@@ -74,7 +75,7 @@ class AnthropicProvider implements AIProvider {
   }
 
   async send(params: ProviderRequest): Promise<AIResponse> {
-    const { conversationData, botDisplayName, imageBlocks } = params;
+    const { conversationData, botDisplayName, imageBlocks, otherSpeakers } = params;
     const { cachedBlocks, tail } = conversationData;
     const trimmedSystemPrompt = this.systemPrompt.trim();
 
@@ -91,10 +92,8 @@ class AnthropicProvider implements AIProvider {
         ]
       : undefined;
 
-    // Build speaker list from both cached blocks and tail
-    const allText = [...cachedBlocks, ...tail.map((m) => m.content)].join('\n');
-    const trackedSpeakers = extractSpeakersFromText(allText, botDisplayName);
-    const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
+    // Use actual Discord usernames for fragmentation detection
+    const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
 
     const commandBlocks: ClaudeContentBlock[] = this.prefillCommand
       ? [
@@ -223,12 +222,10 @@ class OpenAIProvider implements AIProvider {
   }
 
   async send(params: ProviderRequest): Promise<AIResponse> {
-    const { conversationData, botDisplayName, imageBlocks } = params;
+    const { conversationData, botDisplayName, imageBlocks, otherSpeakers } = params;
     const { cachedBlocks, tail } = conversationData;
     const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
-    const allText = [...cachedBlocks, ...tail.map((m) => m.content)].join('\n');
-    const trackedSpeakers = extractSpeakersFromText(allText, botDisplayName);
-    const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
+    const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
     const trimmedSystemPrompt = this.systemPrompt.trim();
 
     const messages: ChatCompletionMessageParam[] = [];
@@ -396,24 +393,6 @@ function extractOpenAIDelta(chunk: ChatCompletionChunk): string {
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function extractSpeakersFromText(text: string, botDisplayName: string): string[] {
-  const normalizedBot = botDisplayName.toLowerCase();
-  const names = new Set<string>();
-
-  // Match "Name:" at the start of lines
-  const lines = text.split('\n');
-  for (const line of lines) {
-    const colonIndex = line.indexOf(':');
-    if (colonIndex === -1) continue;
-    const name = line.slice(0, colonIndex).trim();
-    if (!name) continue;
-    if (name.toLowerCase() === normalizedBot) continue;
-    names.add(name);
-  }
-
-  return [...names];
 }
 
 function buildFragmentationRegex(names: string[]): RegExp | null {

@@ -172,11 +172,13 @@ function setupBotEvents(instance) {
                 console.log(`[${config.name}] Context built for ${message.id} in ${contextDuration}ms`);
                 stopTyping = startTypingIndicator(message.channel);
                 const imageBlocks = (0, context_1.getImageBlocksFromAttachments)(message.attachments);
+                const otherSpeakers = (0, context_1.getChannelSpeakers)(channelId, client.user?.id);
                 const providerStart = Date.now();
                 const aiReply = await aiProvider.send({
                     conversationData,
                     botDisplayName,
                     imageBlocks,
+                    otherSpeakers,
                 });
                 const providerDuration = Date.now() - providerStart;
                 console.log(`[${config.name}] Provider responded for ${message.id} in ${providerDuration}ms`);

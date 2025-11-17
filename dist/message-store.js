@@ -43,6 +43,7 @@ exports.loadHistoryFromDiscord = loadHistoryFromDiscord;
 exports.clearChannel = clearChannel;
 exports.clearAll = clearAll;
 exports.getStats = getStats;
+exports.getChannelSpeakers = getChannelSpeakers;
 const fs = __importStar(require("fs"));
 const config_1 = require("./config");
 // ---------- Constants ----------
@@ -393,4 +394,14 @@ function getStats() {
         totalMessages,
         totalBlocks,
     };
+}
+function getChannelSpeakers(channelId, excludeBotId) {
+    const messages = messagesByChannel.get(channelId) ?? [];
+    const speakers = new Set();
+    for (const msg of messages) {
+        if (excludeBotId && msg.authorId === excludeBotId)
+            continue;
+        speakers.add(msg.authorName);
+    }
+    return [...speakers];
 }

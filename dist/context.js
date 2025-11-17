@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getBlockBoundaries = exports.appendMessage = void 0;
+exports.getChannelSpeakers = exports.getBlockBoundaries = exports.appendMessage = void 0;
 exports.isThreadChannel = isThreadChannel;
 exports.buildConversationContext = buildConversationContext;
 exports.getImageBlocksFromAttachments = getImageBlocksFromAttachments;
@@ -76,3 +76,5 @@ function isImageAttachment(attachment) {
     const contentType = attachment.contentType ?? '';
     return contentType.startsWith('image/') && Boolean(attachment.url);
 }
+var message_store_2 = require("./message-store");
+Object.defineProperty(exports, "getChannelSpeakers", { enumerable: true, get: function () { return message_store_2.getChannelSpeakers; } });

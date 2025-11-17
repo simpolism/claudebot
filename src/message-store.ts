@@ -468,3 +468,15 @@ export function getStats(): { channels: number; totalMessages: number; totalBloc
     totalBlocks,
   };
 }
+
+export function getChannelSpeakers(channelId: string, excludeBotId?: string): string[] {
+  const messages = messagesByChannel.get(channelId) ?? [];
+  const speakers = new Set<string>();
+
+  for (const msg of messages) {
+    if (excludeBotId && msg.authorId === excludeBotId) continue;
+    speakers.add(msg.authorName);
+  }
+
+  return [...speakers];
+}

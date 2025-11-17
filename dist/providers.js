@@ -31,7 +31,7 @@ class AnthropicProvider {
         });
     }
     async send(params) {
-        const { conversationData, botDisplayName, imageBlocks } = params;
+        const { conversationData, botDisplayName, imageBlocks, otherSpeakers } = params;
         const { cachedBlocks, tail } = conversationData;
         const trimmedSystemPrompt = this.systemPrompt.trim();
         const systemBlocks = trimmedSystemPrompt
@@ -46,10 +46,8 @@ class AnthropicProvider {
                 },
             ]
             : undefined;
-        // Build speaker list from both cached blocks and tail
-        const allText = [...cachedBlocks, ...tail.map((m) => m.content)].join('\n');
-        const trackedSpeakers = extractSpeakersFromText(allText, botDisplayName);
-        const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
+        // Use actual Discord usernames for fragmentation detection
+        const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
         const commandBlocks = this.prefillCommand
             ? [
                 {
@@ -153,12 +151,10 @@ class OpenAIProvider {
         });
     }
     async send(params) {
-        const { conversationData, botDisplayName, imageBlocks } = params;
+        const { conversationData, botDisplayName, imageBlocks, otherSpeakers } = params;
         const { cachedBlocks, tail } = conversationData;
         const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
-        const allText = [...cachedBlocks, ...tail.map((m) => m.content)].join('\n');
-        const trackedSpeakers = extractSpeakersFromText(allText, botDisplayName);
-        const guard = new FragmentationGuard(buildFragmentationRegex(trackedSpeakers));
+        const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
         const trimmedSystemPrompt = this.systemPrompt.trim();
         const messages = [];
         if (trimmedSystemPrompt?.length > 0) {
@@ -310,24 +306,6 @@ function extractOpenAIDelta(chunk) {
 }
 function escapeRegExp(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-function extractSpeakersFromText(text, botDisplayName) {
-    const normalizedBot = botDisplayName.toLowerCase();
-    const names = new Set();
-    // Match "Name:" at the start of lines
-    const lines = text.split('\n');
-    for (const line of lines) {
-        const colonIndex = line.indexOf(':');
-        if (colonIndex === -1)
-            continue;
-        const name = line.slice(0, colonIndex).trim();
-        if (!name)
-            continue;
-        if (name.toLowerCase() === normalizedBot)
-            continue;
-        names.add(name);
-    }
-    return [...names];
 }
 function buildFragmentationRegex(names) {
     if (names.length === 0)

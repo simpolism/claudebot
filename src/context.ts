@@ -111,3 +111,4 @@ function isImageAttachment(attachment: Attachment): boolean {
 // ---------- Re-export for convenience ----------
 
 export { appendMessage, getBlockBoundaries };
+export { getChannelSpeakers } from './message-store';

@@ -3,7 +3,12 @@ import { Client, Events, GatewayIntentBits, Message, Partials } from 'discord.js
 import { createAIProvider, AIProvider } from './providers';
 import { activeBotConfigs, globalConfig, resolveConfig, BotConfig } from './config';
 import { loadBoundariesFromDisk, loadHistoryFromDiscord, appendMessage } from './message-store';
-import { buildConversationContext, getImageBlocksFromAttachments, isThreadChannel } from './context';
+import {
+  buildConversationContext,
+  getImageBlocksFromAttachments,
+  isThreadChannel,
+  getChannelSpeakers,
+} from './context';
 import { chunkReplyText, convertOutputMentions } from './discord-utils';
 
 // ---------- Types ----------
@@ -220,11 +225,13 @@ function setupBotEvents(instance: BotInstance): void {
 
         stopTyping = startTypingIndicator(message.channel);
         const imageBlocks = getImageBlocksFromAttachments(message.attachments);
+        const otherSpeakers = getChannelSpeakers(channelId, client.user?.id);
         const providerStart = Date.now();
         const aiReply = await aiProvider.send({
           conversationData,
           botDisplayName,
           imageBlocks,
+          otherSpeakers,
         });
         const providerDuration = Date.now() - providerStart;
         console.log(`[${config.name}] Provider responded for ${message.id} in ${providerDuration}ms`);

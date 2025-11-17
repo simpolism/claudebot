@@ -69,6 +69,7 @@ describe('OpenAIProvider message layout', () => {
       },
       botDisplayName: 'Bot',
       imageBlocks: [],
+      otherSpeakers: ['Alice'],
     });
 
     const messages = createMock.mock.calls[0][0].messages;
@@ -107,6 +108,7 @@ describe('OpenAIProvider message layout', () => {
           source: { type: 'url', url: 'http://example/image.png' },
         },
       ],
+      otherSpeakers: ['Alice'],
     });
 
     const messages = createMock.mock.calls[0][0].messages;
