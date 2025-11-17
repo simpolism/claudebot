@@ -164,20 +164,28 @@ function setupBotEvents(instance) {
             }
             // Acquire lock
             processingChannels.add(lockKey);
+            const receiveTime = Date.now();
+            console.log(`[${config.name}] Received mention ${message.id} in ${channelId} at ${new Date(receiveTime).toISOString()}`);
             try {
+                const contextStart = Date.now();
                 const conversationData = await (0, context_1.buildConversationContext)({
                     channel: message.channel,
                     maxContextTokens: resolved.maxContextTokens,
                     client,
                     botDisplayName,
                 });
+                const contextDuration = Date.now() - contextStart;
+                console.log(`[${config.name}] Context built for ${message.id} in ${contextDuration}ms`);
                 stopTyping = startTypingIndicator(message.channel);
                 const imageBlocks = (0, context_1.getImageBlocksFromAttachments)(message.attachments);
+                const providerStart = Date.now();
                 const aiReply = await aiProvider.send({
                     conversationData,
                     botDisplayName,
                     imageBlocks,
                 });
+                const providerDuration = Date.now() - providerStart;
+                console.log(`[${config.name}] Provider responded for ${message.id} in ${providerDuration}ms`);
                 const replyText = aiReply.text;
                 stopTyping();
                 stopTyping = null;
@@ -195,7 +203,8 @@ function setupBotEvents(instance) {
                         }
                     }
                 }
-                console.log(`[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'})`);
+                const totalDuration = Date.now() - receiveTime;
+                console.log(`[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'}) in ${totalDuration}ms`);
             }
             finally {
                 // Release lock

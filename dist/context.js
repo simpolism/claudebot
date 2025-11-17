@@ -59,6 +59,7 @@ async function buildConversationContext(params) {
     // The token budget is a soft limit (e.g. 100k within Claude's 200k window) so slight
     // overflow is acceptable if it keeps the latest uncached messages in view.
     const fetchBudget = Math.max(remainingBudget, exports.GUARANTEED_TAIL_TOKENS);
+    console.log(`[${botDisplayName}] Fetching Discord history for ${channelId} after ${lastCachedMessageId ?? 'beginning'} with budget ${fetchBudget} tokens`);
     // Fetch new messages after the last cached one
     const newMessages = await fetchMessages(channel, lastCachedMessageId, fetchBudget, client);
     if (newMessages.length > 0) {

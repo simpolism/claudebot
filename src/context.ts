@@ -108,6 +108,12 @@ export async function buildConversationContext(params: {
   // overflow is acceptable if it keeps the latest uncached messages in view.
   const fetchBudget = Math.max(remainingBudget, GUARANTEED_TAIL_TOKENS);
 
+  console.log(
+    `[${botDisplayName}] Fetching Discord history for ${channelId} after ${
+      lastCachedMessageId ?? 'beginning'
+    } with budget ${fetchBudget} tokens`,
+  );
+
   // Fetch new messages after the last cached one
   const newMessages = await fetchMessages(
     channel,

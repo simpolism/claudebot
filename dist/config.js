@@ -35,7 +35,6 @@ exports.botConfigs = [
         model: 'moonshotai/kimi-k2-instruct-0905',
         openaiBaseUrl: 'https://api.groq.com/openai/v1',
         openaiApiKey: process.env.GROQ_API_KEY || '',
-        supportsImageBlocks: true,
     },
 ];
 // Filter out bots without tokens (allows partial configuration)
