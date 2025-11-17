@@ -24,6 +24,17 @@ const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
 // ---------- Channel Processing Locks ----------
 const processingChannels = new Set<string>();
 
+// Track pending requests for cancellation on double-tag
+interface PendingRequest {
+  abortController: AbortController;
+  messageId: string;
+  startTime: number;
+}
+const pendingRequests = new Map<string, PendingRequest>();
+
+// Minimum time before a request can be cancelled (ms)
+const MIN_PROCESSING_TIME_BEFORE_RESTART = 100;
+
 const allowedRootChannels = new Set(globalConfig.mainChannelIds);
 
 function isChannelAllowed(channelId: string | null | undefined): boolean {
@@ -45,10 +56,11 @@ function isInScope(message: Message): boolean {
 
 function shouldRespond(message: Message, client: Client): boolean {
   if (!isInScope(message)) return false;
-  if (message.author.bot) return false;
   if (!client.user) return false;
-
   if (!message.mentions.has(client.user)) return false;
+
+  // Don't respond to own messages
+  if (message.author.id === client.user.id) return false;
 
   const channelId = message.channel.id;
   const currentCount = consecutiveBotMessages.get(channelId) || 0;
@@ -193,14 +205,38 @@ function setupBotEvents(instance: BotInstance): void {
       const botDisplayName = getBotCanonicalName(client);
 
       const lockKey = `${client.user?.id}:${channelId}`;
+
+      // Check for existing request - cancel and restart if new tag comes in
       if (processingChannels.has(lockKey)) {
-        console.log(`[${config.name}] Already processing ${channelId}, skipping duplicate`);
-        return;
+        const pending = pendingRequests.get(lockKey);
+        if (pending) {
+          const elapsed = Date.now() - pending.startTime;
+          if (elapsed >= MIN_PROCESSING_TIME_BEFORE_RESTART) {
+            console.log(
+              `[${config.name}] New tag ${message.id} received while processing ${pending.messageId}, canceling and restarting`,
+            );
+            pending.abortController.abort();
+            // Wait for the aborted request to clean up
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          } else {
+            console.log(`[${config.name}] Already processing ${channelId}, too early to restart`);
+            return;
+          }
+        } else {
+          console.log(`[${config.name}] Already processing ${channelId}, skipping duplicate`);
+          return;
+        }
       }
 
       processingChannels.add(lockKey);
-
+      const abortController = new AbortController();
       const receiveTime = Date.now();
+      pendingRequests.set(lockKey, {
+        abortController,
+        messageId: message.id,
+        startTime: receiveTime,
+      });
+
       console.log(
         `[${config.name}] Received mention ${message.id} in ${channelId} at ${new Date(receiveTime).toISOString()}`,
       );
@@ -216,6 +252,12 @@ function setupBotEvents(instance: BotInstance): void {
         const contextDuration = Date.now() - contextStart;
         console.log(`[${config.name}] Context built for ${message.id} in ${contextDuration}ms`);
 
+        // Check if aborted before making expensive API call
+        if (abortController.signal.aborted) {
+          console.log(`[${config.name}] Request ${message.id} aborted before provider call`);
+          return;
+        }
+
         stopTyping = startTypingIndicator(message.channel);
         const imageBlocks = getImageBlocksFromAttachments(message.attachments);
         const otherSpeakers = getChannelSpeakers(channelId, client.user?.id);
@@ -229,6 +271,13 @@ function setupBotEvents(instance: BotInstance): void {
           imageBlocks,
           otherSpeakers: guardSpeakers,
         });
+
+        // Check if aborted after API call (second tag came in during processing)
+        if (abortController.signal.aborted) {
+          console.log(`[${config.name}] Request ${message.id} aborted after provider call, discarding response`);
+          return;
+        }
+
         const providerDuration = Date.now() - providerStart;
         console.log(`[${config.name}] Provider responded for ${message.id} in ${providerDuration}ms`);
         const replyText = aiReply.text;
@@ -328,6 +377,7 @@ function setupBotEvents(instance: BotInstance): void {
         );
       } finally {
         processingChannels.delete(lockKey);
+        pendingRequests.delete(lockKey);
       }
     } catch (err) {
       console.error(`[${config.name}] Error handling message:`, err);
