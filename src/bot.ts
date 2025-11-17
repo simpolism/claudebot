@@ -2,9 +2,10 @@ import 'dotenv/config';
 import { Client, Events, GatewayIntentBits, Message, Partials } from 'discord.js';
 import { createAIProvider, AIProvider } from './providers';
 import { activeBotConfigs, globalConfig, resolveConfig, BotConfig } from './config';
-import { loadBoundariesFromDisk, loadHistoryFromDiscord, appendMessage } from './message-store';
+import { loadBoundariesFromDisk, loadHistoryFromDiscord, appendMessage, appendStoredMessage, StoredMessage } from './message-store';
 import { buildConversationContext, getImageBlocksFromAttachments, getChannelSpeakers } from './context';
 import { chunkReplyText, convertOutputMentions } from './discord-utils';
+import { startDebugServer } from './debug-server';
 
 // ---------- Types ----------
 interface BotInstance {
@@ -231,17 +232,34 @@ function setupBotEvents(instance: BotInstance): void {
         const formattedReplyText = convertOutputMentions(replyText, message.channel, client);
 
         const replyChunks = chunkReplyText(formattedReplyText);
+        const sentMessages: Message[] = [];
         if (replyChunks.length > 0) {
           const [firstChunk, ...restChunks] = replyChunks;
-          await message.reply(firstChunk);
+          const firstSent = await message.reply(firstChunk);
+          sentMessages.push(firstSent);
 
           for (const chunk of restChunks) {
             if (hasSend(message.channel)) {
-              await message.channel.send(chunk);
+              const sent = await message.channel.send(chunk);
+              sentMessages.push(sent);
             } else {
-              await message.reply(chunk);
+              const sent = await message.reply(chunk);
+              sentMessages.push(sent);
             }
           }
+        }
+
+        // Append bot's own replies to the message store
+        for (const sentMsg of sentMessages) {
+          const stored: StoredMessage = {
+            id: sentMsg.id,
+            channelId: sentMsg.channel.id,
+            authorId: sentMsg.author.id,
+            authorName: botDisplayName, // Use canonical name for consistency
+            content: sentMsg.content || '(empty message)',
+            timestamp: sentMsg.createdTimestamp,
+          };
+          appendStoredMessage(stored);
         }
 
         const totalDuration = Date.now() - receiveTime;
@@ -268,6 +286,9 @@ function setupBotEvents(instance: BotInstance): void {
 
 // ---------- Main ----------
 async function main(): Promise<void> {
+  // Start debug server for inspecting in-memory state
+  startDebugServer();
+
   // Load block boundaries from disk (for Anthropic cache consistency)
   loadBoundariesFromDisk();
 

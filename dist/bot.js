@@ -7,6 +7,7 @@ const config_1 = require("./config");
 const message_store_1 = require("./message-store");
 const context_1 = require("./context");
 const discord_utils_1 = require("./discord-utils");
+const debug_server_1 = require("./debug-server");
 // ---------- Bot-to-Bot Exchange Tracking ----------
 const consecutiveBotMessages = new Map();
 const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
@@ -182,17 +183,33 @@ function setupBotEvents(instance) {
                 stopTyping = null;
                 const formattedReplyText = (0, discord_utils_1.convertOutputMentions)(replyText, message.channel, client);
                 const replyChunks = (0, discord_utils_1.chunkReplyText)(formattedReplyText);
+                const sentMessages = [];
                 if (replyChunks.length > 0) {
                     const [firstChunk, ...restChunks] = replyChunks;
-                    await message.reply(firstChunk);
+                    const firstSent = await message.reply(firstChunk);
+                    sentMessages.push(firstSent);
                     for (const chunk of restChunks) {
                         if (hasSend(message.channel)) {
-                            await message.channel.send(chunk);
+                            const sent = await message.channel.send(chunk);
+                            sentMessages.push(sent);
                         }
                         else {
-                            await message.reply(chunk);
+                            const sent = await message.reply(chunk);
+                            sentMessages.push(sent);
                         }
                     }
+                }
+                // Append bot's own replies to the message store
+                for (const sentMsg of sentMessages) {
+                    const stored = {
+                        id: sentMsg.id,
+                        channelId: sentMsg.channel.id,
+                        authorId: sentMsg.author.id,
+                        authorName: botDisplayName, // Use canonical name for consistency
+                        content: sentMsg.content || '(empty message)',
+                        timestamp: sentMsg.createdTimestamp,
+                    };
+                    (0, message_store_1.appendStoredMessage)(stored);
                 }
                 const totalDuration = Date.now() - receiveTime;
                 console.log(`[${config.name}] Replied in channel ${channelId} to ${message.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'}) in ${totalDuration}ms`);
@@ -217,6 +234,8 @@ function setupBotEvents(instance) {
 }
 // ---------- Main ----------
 async function main() {
+    // Start debug server for inspecting in-memory state
+    (0, debug_server_1.startDebugServer)();
     // Load block boundaries from disk (for Anthropic cache consistency)
     (0, message_store_1.loadBoundariesFromDisk)();
     console.log('Starting multi-bot system with configuration:', {

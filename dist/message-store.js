@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.appendMessage = appendMessage;
+exports.appendStoredMessage = appendStoredMessage;
 exports.getChannelMessages = getChannelMessages;
 exports.getBlockBoundaries = getBlockBoundaries;
 exports.getContext = getContext;
@@ -61,6 +62,11 @@ function appendMessage(message) {
     if (!blockBoundaries.has(channelId)) {
         blockBoundaries.set(channelId, []);
     }
+    const messages = messagesByChannel.get(channelId);
+    // Deduplicate: skip if message ID already exists
+    if (messages.some((m) => m.id === message.id)) {
+        return;
+    }
     const stored = {
         id: message.id,
         channelId,
@@ -69,7 +75,23 @@ function appendMessage(message) {
         content: message.content || '(empty message)',
         timestamp: message.createdTimestamp,
     };
-    messagesByChannel.get(channelId).push(stored);
+    messages.push(stored);
+    checkAndFreezeBlocks(channelId);
+}
+function appendStoredMessage(stored) {
+    const channelId = stored.channelId;
+    if (!messagesByChannel.has(channelId)) {
+        messagesByChannel.set(channelId, []);
+    }
+    if (!blockBoundaries.has(channelId)) {
+        blockBoundaries.set(channelId, []);
+    }
+    const messages = messagesByChannel.get(channelId);
+    // Deduplicate: skip if message ID already exists
+    if (messages.some((m) => m.id === stored.id)) {
+        return;
+    }
+    messages.push(stored);
     checkAndFreezeBlocks(channelId);
 }
 function getChannelMessages(channelId) {
@@ -81,15 +103,13 @@ function getBlockBoundaries(channelId) {
 function getContext(channelId, maxTokens, botUserId, botDisplayName) {
     const messages = messagesByChannel.get(channelId) ?? [];
     const boundaries = blockBoundaries.get(channelId) ?? [];
-    // Build frozen blocks
-    const blocks = [];
-    let blocksTokenCount = 0;
+    // Build frozen blocks with their stored token counts
+    const blockData = [];
     let lastBlockEndIdx = -1;
     for (const boundary of boundaries) {
         const blockMessages = getMessagesInRange(messages, boundary.firstMessageId, boundary.lastMessageId);
         const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
-        blocks.push(blockText);
-        blocksTokenCount += boundary.tokenCount;
+        blockData.push({ text: blockText, tokens: boundary.tokenCount });
         // Track where this block ends in the array
         const endIdx = messages.findIndex((m) => m.id === boundary.lastMessageId);
         if (endIdx !== -1) {
@@ -98,49 +118,71 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName) {
     }
     // Build tail (messages after last frozen block)
     const tailMessages = messages.slice(lastBlockEndIdx + 1);
-    const tailFormatted = [];
-    let tailTokenCount = 0;
+    const tailData = [];
     for (const msg of tailMessages) {
         const formatted = formatMessage(msg, botUserId, botDisplayName);
-        const tokens = estimateTokens(formatted);
-        tailFormatted.push(formatted);
-        tailTokenCount += tokens;
+        const tokens = estimateTokens(formatted) + 4; // +4 for overhead, consistent with freeze
+        tailData.push({ text: formatted, tokens });
     }
-    // Trim if over budget (remove oldest blocks first, then oldest tail)
+    // Calculate totals
+    let blocksTokenCount = blockData.reduce((sum, b) => sum + b.tokens, 0);
+    let tailTokenCount = tailData.reduce((sum, t) => sum + t.tokens, 0);
     let totalTokens = blocksTokenCount + tailTokenCount;
-    const finalBlocks = [...blocks];
-    const finalTail = [...tailFormatted];
-    while (totalTokens > maxTokens && finalBlocks.length > 0) {
-        const removedBlock = finalBlocks.shift();
-        if (removedBlock) {
-            totalTokens -= estimateTokens(removedBlock);
+    // Trim if over budget (remove oldest blocks first, then oldest tail)
+    const finalBlockData = [...blockData];
+    const finalTailData = [...tailData];
+    let evictedBlocks = 0;
+    let evictedTailMessages = 0;
+    while (totalTokens > maxTokens && finalBlockData.length > 0) {
+        const removed = finalBlockData.shift();
+        if (removed) {
+            totalTokens -= removed.tokens;
+            evictedBlocks++;
         }
     }
-    while (totalTokens > maxTokens && finalTail.length > 0) {
-        const removedMsg = finalTail.shift();
-        if (removedMsg) {
-            totalTokens -= estimateTokens(removedMsg);
+    while (totalTokens > maxTokens && finalTailData.length > 0) {
+        const removed = finalTailData.shift();
+        if (removed) {
+            totalTokens -= removed.tokens;
+            evictedTailMessages++;
         }
+    }
+    if (evictedBlocks > 0 || evictedTailMessages > 0) {
+        console.log(`[getContext] Evicted ${evictedBlocks} blocks and ${evictedTailMessages} tail messages to fit ${maxTokens} token budget`);
     }
     return {
-        blocks: finalBlocks,
-        tail: finalTail,
+        blocks: finalBlockData.map((b) => b.text),
+        tail: finalTailData.map((t) => t.text),
         totalTokens,
     };
 }
 function getMessagesInRange(messages, firstId, lastId) {
     const result = [];
     let inRange = false;
+    let foundFirst = false;
+    let foundLast = false;
     for (const msg of messages) {
         if (msg.id === firstId) {
             inRange = true;
+            foundFirst = true;
         }
         if (inRange) {
             result.push(msg);
         }
         if (msg.id === lastId) {
+            foundLast = true;
             break;
         }
+    }
+    // Debug warnings for incomplete ranges
+    if (!foundFirst) {
+        console.error(`[getMessagesInRange] CRITICAL: firstId ${firstId} not found in ${messages.length} messages!`);
+    }
+    if (!foundLast) {
+        console.error(`[getMessagesInRange] CRITICAL: lastId ${lastId} not found in ${messages.length} messages!`);
+    }
+    if (result.length === 0 && (foundFirst || foundLast)) {
+        console.error(`[getMessagesInRange] WARNING: Empty result despite finding boundary IDs`);
     }
     return result;
 }
@@ -168,10 +210,14 @@ function checkAndFreezeBlocks(channelId) {
         if (lastBoundaryIdx !== -1) {
             tailStartIdx = lastBoundaryIdx + 1;
         }
+        else {
+            console.error(`[checkAndFreezeBlocks] CRITICAL: lastBoundary.lastMessageId ${lastBoundary.lastMessageId} not found in messages!`);
+        }
     }
     // Accumulate tail tokens
     let accumulatedTokens = 0;
     let blockStartIdx = tailStartIdx;
+    let messagesInBlock = 0;
     for (let i = tailStartIdx; i < messages.length; i++) {
         const msg = messages[i];
         if (!msg)
@@ -179,22 +225,32 @@ function checkAndFreezeBlocks(channelId) {
         const msgText = `${msg.authorName}: ${msg.content}`;
         const tokens = estimateTokens(msgText) + 4; // +4 for overhead
         accumulatedTokens += tokens;
+        messagesInBlock++;
         // Freeze block when threshold reached
         if (accumulatedTokens >= DEFAULT_TOKENS_PER_BLOCK) {
             const firstMsg = messages[blockStartIdx];
             const lastMsg = messages[i];
             if (firstMsg && lastMsg) {
-                boundaries.push({
+                const newBoundary = {
                     firstMessageId: firstMsg.id,
                     lastMessageId: lastMsg.id,
                     tokenCount: accumulatedTokens,
-                });
-                console.log(`Frozen new block for ${channelId} (~${accumulatedTokens} tokens)`);
+                };
+                boundaries.push(newBoundary);
+                console.log(`[checkAndFreezeBlocks] Frozen block #${boundaries.length} for ${channelId}: ` +
+                    `${messagesInBlock} messages, ~${accumulatedTokens} tokens, ` +
+                    `IDs ${firstMsg.id}..${lastMsg.id}`);
+                // Debug: Show total state after freeze
+                const totalBlockTokens = boundaries.reduce((sum, b) => sum + b.tokenCount, 0);
+                const remainingTail = messages.length - i - 1;
+                console.log(`[checkAndFreezeBlocks] State: ${boundaries.length} blocks (~${totalBlockTokens} tokens), ` +
+                    `${remainingTail} messages in tail`);
                 saveBoundariesToDisk();
             }
             // Reset for next potential block
             accumulatedTokens = 0;
             blockStartIdx = i + 1;
+            messagesInBlock = 0;
         }
     }
 }
