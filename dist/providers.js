@@ -149,6 +149,7 @@ class OpenAIProvider {
         this.maxTokens = options.maxTokens;
         this.model = options.openaiModel;
         this.supportsImageBlocks = options.supportsImageBlocks;
+        this.useUserAssistantPrefill = options.useUserAssistantPrefill;
         this.client = new openai_1.default({
             apiKey,
             baseURL: options.openaiBaseURL,
@@ -174,8 +175,9 @@ class OpenAIProvider {
                 content: trimmedPrefillCommand,
             });
         }
-        if (this.supportsImageBlocks) {
-            // When images are supported, transcript must be in user content (for image_url blocks)
+        if (this.supportsImageBlocks || this.useUserAssistantPrefill) {
+            // When images are supported or user/assistant prefill is requested,
+            // transcript must be in user content (for image_url blocks or Anthropic-style formatting)
             const userContent = [
                 {
                     type: 'text',

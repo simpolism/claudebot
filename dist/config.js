@@ -80,6 +80,7 @@ function loadBotConfigsFromJSON() {
             maxTokens: jsonConfig.maxTokens,
             temperature: jsonConfig.temperature,
             systemPrompt: jsonConfig.systemPrompt,
+            useUserAssistantPrefill: jsonConfig.useUserAssistantPrefill,
             cliSimMode: jsonConfig.cliSimMode,
         }));
     }

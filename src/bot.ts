@@ -169,6 +169,7 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
     openaiBaseURL: resolved.openaiBaseUrl || 'https://api.openai.com/v1',
     openaiApiKey: resolved.openaiApiKey || '',
     supportsImageBlocks: Boolean(botConfig.supportsImageBlocks),
+    useUserAssistantPrefill: Boolean(botConfig.useUserAssistantPrefill),
     geminiModel: resolved.model,
     geminiApiKey: resolved.geminiApiKey || '',
     geminiOutputMode: resolved.geminiOutputMode || 'both',

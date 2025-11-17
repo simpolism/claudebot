@@ -23,6 +23,9 @@ export interface BotConfig {
   temperature?: number;
   systemPrompt?: string; // Override global system prompt
 
+  // Use Anthropic-style user message + assistant prefill (for OpenAI-compatible providers)
+  useUserAssistantPrefill?: boolean;
+
   // CLI simulation mode (legacy, can be removed later)
   cliSimMode?: boolean;
 }
@@ -42,6 +45,7 @@ interface BotConfigJSON {
   maxTokens?: number;
   temperature?: number;
   systemPrompt?: string;
+  useUserAssistantPrefill?: boolean;
   cliSimMode?: boolean;
 }
 
@@ -92,6 +96,7 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       maxTokens: jsonConfig.maxTokens,
       temperature: jsonConfig.temperature,
       systemPrompt: jsonConfig.systemPrompt,
+      useUserAssistantPrefill: jsonConfig.useUserAssistantPrefill,
       cliSimMode: jsonConfig.cliSimMode,
     }));
   } catch (err) {

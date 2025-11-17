@@ -28,6 +28,7 @@ type ProviderInitOptions = {
   openaiBaseURL: string;
   openaiApiKey: string;
   supportsImageBlocks: boolean;
+  useUserAssistantPrefill: boolean;
   geminiModel: string;
   geminiApiKey: string;
   geminiOutputMode: 'text' | 'image' | 'both';
@@ -210,6 +211,7 @@ class OpenAIProvider implements AIProvider {
   private maxTokens: number;
   private model: string;
   private supportsImageBlocks: boolean;
+  private useUserAssistantPrefill: boolean;
 
   constructor(options: ProviderInitOptions) {
     const apiKey = options.openaiApiKey;
@@ -222,6 +224,7 @@ class OpenAIProvider implements AIProvider {
     this.maxTokens = options.maxTokens;
     this.model = options.openaiModel;
     this.supportsImageBlocks = options.supportsImageBlocks;
+    this.useUserAssistantPrefill = options.useUserAssistantPrefill;
     this.client = new OpenAI({
       apiKey,
       baseURL: options.openaiBaseURL,
@@ -251,8 +254,9 @@ class OpenAIProvider implements AIProvider {
       });
     }
 
-    if (this.supportsImageBlocks) {
-      // When images are supported, transcript must be in user content (for image_url blocks)
+    if (this.supportsImageBlocks || this.useUserAssistantPrefill) {
+      // When images are supported or user/assistant prefill is requested,
+      // transcript must be in user content (for image_url blocks or Anthropic-style formatting)
       const userContent: ChatCompletionContentPart[] = [
         {
           type: 'text' as const,
