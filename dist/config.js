@@ -42,7 +42,7 @@ exports.botConfigs = [
         provider: 'gemini',
         model: 'gemini-2.5-flash-image',
         geminiApiKey: process.env.GOOGLE_API_KEY || '',
-        geminiOutputMode: 'image',
+        geminiOutputMode: 'both',
         maxContextTokens: 30000,
     },
 ];

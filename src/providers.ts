@@ -345,16 +345,6 @@ class GeminiProvider implements AIProvider {
     const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
     const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
 
-    // Build the prompt - include system prompt if present
-    let preamble = '';
-    const trimmedSystemPrompt = this.systemPrompt.trim();
-    if (trimmedSystemPrompt) {
-      preamble += `System: ${trimmedSystemPrompt}\n\n`;
-    }
-    preamble += `Here is the conversation so far:\n\n`;
-
-    const postamble = `\n\nYou are ${botDisplayName}. Please respond to the conversation above.`;
-
     // Configure response modalities based on output mode
     const responseModalities: Array<'Text' | 'Image'> =
       this.outputMode === 'image' ? ['Image'] : this.outputMode === 'text' ? ['Text'] : ['Text', 'Image'];
@@ -362,15 +352,12 @@ class GeminiProvider implements AIProvider {
     // Build interleaved content parts with images inline
     const contentParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
-    // Add preamble
-    contentParts.push({ text: preamble });
-
     // Split transcript on image markers, keeping the markers
     const imagePattern = /(!\[image\]\([^\)]+\))/g;
     const segments = transcriptText.split(imagePattern);
 
     // Find all image markers and only fetch the last N
-    const MAX_HISTORICAL_IMAGES = 4;
+    const MAX_HISTORICAL_IMAGES = 1;
     const imageMarkerIndices: number[] = [];
     for (let i = 0; i < segments.length; i++) {
       if (segments[i].match(/^!\[image\]\([^\)]+\)$/)) {
@@ -425,9 +412,6 @@ class GeminiProvider implements AIProvider {
       }
     }
 
-    // Add postamble
-    contentParts.push({ text: postamble });
-
     // Add images from the current message attachments (if any)
     for (const imageBlock of imageBlocks) {
       // imageBlock.source.url is a data URL like "data:image/png;base64,..."
@@ -445,11 +429,17 @@ class GeminiProvider implements AIProvider {
       }
     }
 
+    // Build multi-turn conversation with model prefill
+    const contents = [
+      { role: 'user' as const, parts: contentParts },
+      { role: 'model' as const, parts: [{ text: `${botDisplayName}:` }] },
+    ];
+
     console.log(`[GeminiProvider] Sending ${contentParts.length} content parts to model`);
 
     const response = await this.client.models.generateContent({
       model: this.model,
-      contents: contentParts,
+      contents,
       config: {
         responseModalities,
       },
