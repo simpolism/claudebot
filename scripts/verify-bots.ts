@@ -166,9 +166,34 @@ async function verifyAPI(config: BotConfig): Promise<{ success: boolean; error?:
 }
 
 async function main(): Promise<void> {
-  console.log(`Verifying ${botConfigs.length} bot(s) from bots.json...\n`);
+  // Parse optional bot name filter from command line
+  const args = process.argv.slice(2);
+  let botFilter: string | null = null;
 
-  if (botConfigs.length === 0) {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--bot' || args[i] === '-b') {
+      botFilter = args[i + 1] || null;
+      break;
+    } else if (!args[i].startsWith('-')) {
+      botFilter = args[i];
+      break;
+    }
+  }
+
+  let configsToTest = botConfigs;
+
+  if (botFilter) {
+    configsToTest = botConfigs.filter((c) => c.name.toLowerCase() === botFilter!.toLowerCase());
+    if (configsToTest.length === 0) {
+      console.error(`Bot "${botFilter}" not found in bots.json`);
+      console.log('Available bots:', botConfigs.map((c) => c.name).join(', '));
+      process.exit(1);
+    }
+  }
+
+  console.log(`Verifying ${configsToTest.length} bot(s) from bots.json...\n`);
+
+  if (configsToTest.length === 0) {
     console.log('No bots configured in bots.json');
     process.exit(1);
   }
@@ -176,7 +201,7 @@ async function main(): Promise<void> {
   const results: VerificationResult[] = [];
 
   // Verify bots sequentially to avoid rate limiting
-  for (const config of botConfigs) {
+  for (const config of configsToTest) {
     console.log(`${config.name}:`);
 
     // Verify Discord
