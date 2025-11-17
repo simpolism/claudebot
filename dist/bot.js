@@ -31,7 +31,12 @@ function isChannelAllowed(channelId) {
 }
 // ---------- Utility Functions ----------
 function isInScope(message) {
-    // Only allow exact channel matches (no threads)
+    // For threads, check if the parent channel is allowed
+    // For regular channels, check the channel itself
+    if (message.channel.isThread()) {
+        const parentId = message.channel.parentId;
+        return isChannelAllowed(parentId);
+    }
     return isChannelAllowed(message.channel.id);
 }
 function shouldRespond(message, client) {
@@ -290,9 +295,15 @@ function setupBotEvents(instance) {
                     if (!content) {
                         content = '(empty message)';
                     }
+                    // Detect if this is a thread message
+                    const isThread = sentMsg.channel.isThread();
+                    const threadId = isThread ? sentMsg.channel.id : null;
+                    const parentChannelId = isThread ? (sentMsg.channel.parentId ?? sentMsg.channel.id) : sentMsg.channel.id;
                     const stored = {
                         id: sentMsg.id,
                         channelId: sentMsg.channel.id,
+                        threadId,
+                        parentChannelId,
                         authorId: sentMsg.author.id,
                         authorName: botDisplayName, // Use canonical name for consistency
                         content,

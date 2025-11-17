@@ -87,23 +87,19 @@ function messageToStored(message) {
     if (!content) {
         content = '(empty message)';
     }
+    // Detect if this is a thread message
+    const isThread = message.channel.isThread();
+    const threadId = isThread ? message.channel.id : null;
+    const parentChannelId = isThread ? (message.channel.parentId ?? message.channel.id) : message.channel.id;
     return {
         id: message.id,
         channelId: message.channel.id,
+        threadId,
+        parentChannelId,
         authorId: message.author.id,
         authorName: message.author.username ?? message.author.globalName ?? message.author.tag,
         content,
         timestamp: message.createdTimestamp,
-    };
-}
-function storedMessageToDbMessage(stored) {
-    // For now, we don't have thread support in the in-memory system
-    // So threadId is always null and parentChannelId = channelId
-    return {
-        ...stored,
-        threadId: null,
-        parentChannelId: stored.channelId,
-        createdAt: Date.now(),
     };
 }
 // ---------- Message Management ----------
@@ -120,7 +116,10 @@ function appendStoredMessage(stored) {
     // Write to database in parallel if feature flag enabled
     if (config_1.globalConfig.useDatabaseStorage) {
         try {
-            db.insertMessage(storedMessageToDbMessage(stored));
+            db.insertMessage({
+                ...stored,
+                createdAt: Date.now(),
+            });
         }
         catch (err) {
             console.error('[Database] Failed to insert message:', err);
@@ -452,7 +451,10 @@ async function loadHistoryFromDiscord(channelIds, client, maxTokensPerChannel) {
             // Batch insert to database if feature flag enabled
             if (config_1.globalConfig.useDatabaseStorage && messages.length > 0) {
                 try {
-                    const dbMessages = messages.map((m) => storedMessageToDbMessage(m));
+                    const dbMessages = messages.map((m) => ({
+                        ...m,
+                        createdAt: Date.now(),
+                    }));
                     db.insertMessages(dbMessages);
                     console.log(`[Database] Inserted ${messages.length} messages for ${channelId}`);
                 }
