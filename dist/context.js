@@ -11,6 +11,81 @@ const cache_1 = require("./cache");
 exports.GUARANTEED_TAIL_TOKENS = 8000;
 const USER_MENTION_REGEX = /<@!?(\d+)>/g;
 const tailCache = new Map();
+async function hydrateCachedBlockTexts(channel, client, blocks) {
+    if (!channel.isTextBased())
+        return;
+    for (const block of blocks) {
+        if (block.text)
+            continue;
+        if (!block.firstMessageId || !block.lastMessageId) {
+            console.warn(`Skipping hydration for block missing boundaries in channel ${channel.id}`);
+            continue;
+        }
+        const hydrated = await fetchBlockTextRange(channel, block.firstMessageId, block.lastMessageId, client);
+        if (hydrated) {
+            block.text = hydrated;
+        }
+    }
+}
+async function fetchBlockTextRange(channel, firstMessageId, lastMessageId, client) {
+    if (!channel.isTextBased()) {
+        return null;
+    }
+    let firstMessage = null;
+    try {
+        firstMessage = await channel.messages.fetch(firstMessageId);
+    }
+    catch {
+        console.warn(`Failed to fetch first message ${firstMessageId} for cached block in ${channel.id}`);
+        return null;
+    }
+    const collected = [firstMessage];
+    let cursor = firstMessageId;
+    const target = BigInt(lastMessageId);
+    let reachedEnd = BigInt(firstMessageId) >= target;
+    while (!reachedEnd) {
+        const fetched = await channel.messages.fetch({
+            limit: 100,
+            after: cursor,
+        });
+        if (fetched.size === 0) {
+            break;
+        }
+        const sorted = [...fetched.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1);
+        for (const msg of sorted) {
+            collected.push(msg);
+            cursor = msg.id;
+            if (BigInt(msg.id) >= target) {
+                reachedEnd = true;
+                break;
+            }
+        }
+        if (fetched.size < 100) {
+            break;
+        }
+    }
+    const formatted = collected
+        .filter((msg) => {
+        const id = BigInt(msg.id);
+        return id >= BigInt(firstMessageId) && id <= target;
+    })
+        .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+        .map((msg) => {
+        const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
+        const attachmentSummary = buildAttachmentSummary(msg.attachments);
+        const messageContent = replaceUserMentions(msg.content || '(empty message)', msg, client);
+        const storedContent = attachmentSummary
+            ? `${messageContent}\n${attachmentSummary}`
+            : messageContent;
+        const authorName = isAssistant
+            ? getBotCanonicalName(client)
+            : getUserCanonicalName(msg);
+        return formatAuthoredContent(authorName, storedContent);
+    })
+        .join('\n')
+        .trim();
+    return formatted.length > 0 ? formatted : null;
+}
 const defaultCacheAccess = {
     getCachedBlocks: cache_1.getCachedBlocks,
     getLastCachedMessageId: cache_1.getLastCachedMessageId,
@@ -35,7 +110,11 @@ async function buildConversationContext(params) {
         const parentBudget = Math.floor(maxContextTokens * PARENT_CONTEXT_RATIO);
         // Reuse parent's cached blocks (these will hit Anthropic's cache)
         const existingParentBlocks = cacheAccess.getCachedBlocks(parentChannelId);
+        await hydrateCachedBlockTexts(channel.parent, client, existingParentBlocks);
         for (const block of existingParentBlocks) {
+            if (!block.text) {
+                continue;
+            }
             if (parentContextTokens + block.tokenCount <= parentBudget) {
                 parentCachedBlocks.push(block.text);
                 parentContextTokens += block.tokenCount;
@@ -53,6 +132,7 @@ async function buildConversationContext(params) {
     const channelId = channel.id;
     // Get existing cached blocks
     const existingCachedBlocks = cacheAccess.getCachedBlocks(channelId);
+    await hydrateCachedBlockTexts(channel, client, existingCachedBlocks);
     const lastCachedMessageId = cacheAccess.getLastCachedMessageId(channelId);
     const existingTailState = tailCache.get(channelId);
     const effectiveAfterId = existingTailState?.lastFetchedId ?? lastCachedMessageId;
@@ -109,10 +189,8 @@ async function buildConversationContext(params) {
         role: msg.role,
         content: msg.content,
     }));
-    const allCachedBlocks = [
-        ...parentCachedBlocks,
-        ...finalCachedBlocks.map((block) => block.text),
-    ];
+    const channelCachedTexts = finalCachedBlocks.flatMap((block) => block.text ? [block.text] : []);
+    const allCachedBlocks = [...parentCachedBlocks, ...channelCachedTexts];
     const totalCachedTokens = parentContextTokens + channelCachedTokens;
     const tailTokens = combinedTokenCount;
     const contextType = parentCachedBlocks.length > 0 ? 'Thread' : 'Channel';
@@ -143,55 +221,44 @@ async function fetchMessagesAfter(channel, afterMessageId, tokenBudget, client) 
     }
     const messages = [];
     let totalTokens = 0;
-    // Fetch all messages we need
-    const allFetched = [];
-    let lastId;
+    let fetchCursor = afterMessageId ?? undefined;
     while (totalTokens < tokenBudget) {
         const fetched = await channel.messages.fetch({
             limit: 100,
-            before: lastId,
+            after: fetchCursor,
         });
         if (fetched.size === 0) {
             break;
         }
-        let reachedCachedMessage = false;
-        for (const msg of fetched.values()) {
-            if (afterMessageId && msg.id === afterMessageId) {
-                reachedCachedMessage = true;
-                break;
+        const sorted = [...fetched.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1);
+        for (const msg of sorted) {
+            const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
+            const role = isAssistant ? 'assistant' : 'user';
+            const attachmentSummary = buildAttachmentSummary(msg.attachments);
+            const messageContent = replaceUserMentions(msg.content || '(empty message)', msg, client);
+            const storedContent = attachmentSummary
+                ? `${messageContent}\n${attachmentSummary}`
+                : messageContent;
+            const authorName = isAssistant
+                ? getBotCanonicalName(client)
+                : getUserCanonicalName(msg);
+            const formattedText = formatAuthoredContent(authorName, storedContent);
+            const tokens = estimateTokens(formattedText) + 4;
+            if (totalTokens + tokens > tokenBudget) {
+                return messages;
             }
-            allFetched.push(msg);
+            messages.push({
+                id: msg.id,
+                formattedText,
+                tokens,
+                role,
+            });
+            totalTokens += tokens;
+            fetchCursor = msg.id;
         }
-        if (reachedCachedMessage) {
+        if (fetched.size < 100) {
             break;
         }
-        lastId = fetched.last()?.id;
-    }
-    // Process in chronological order (oldest first)
-    allFetched.reverse();
-    for (const msg of allFetched) {
-        const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
-        const role = isAssistant ? 'assistant' : 'user';
-        const attachmentSummary = buildAttachmentSummary(msg.attachments);
-        const messageContent = replaceUserMentions(msg.content || '(empty message)', msg, client);
-        const storedContent = attachmentSummary
-            ? `${messageContent}\n${attachmentSummary}`
-            : messageContent;
-        const authorName = isAssistant
-            ? getBotCanonicalName(client)
-            : getUserCanonicalName(msg);
-        const formattedText = formatAuthoredContent(authorName, storedContent);
-        const tokens = estimateTokens(formattedText) + 4;
-        if (totalTokens + tokens > tokenBudget) {
-            break;
-        }
-        messages.push({
-            id: msg.id,
-            formattedText,
-            tokens,
-            role,
-        });
-        totalTokens += tokens;
     }
     return messages;
 }

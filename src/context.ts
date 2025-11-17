@@ -8,7 +8,12 @@ import {
   PublicThreadChannel,
 } from 'discord.js';
 import { globalConfig } from './config';
-import { getCachedBlocks, getLastCachedMessageId, updateCache } from './cache';
+import {
+  getCachedBlocks,
+  getLastCachedMessageId,
+  updateCache,
+  type CachedBlock,
+} from './cache';
 import { ConversationData, ImageBlock, SimpleMessage } from './types';
 
 export const GUARANTEED_TAIL_TOKENS = 8000;
@@ -27,6 +32,112 @@ type TailCacheEntry = {
 };
 
 const tailCache = new Map<string, TailCacheEntry>();
+
+async function hydrateCachedBlockTexts(
+  channel: Message['channel'],
+  client: Client,
+  blocks: CachedBlock[],
+): Promise<void> {
+  if (!channel.isTextBased()) return;
+  for (const block of blocks) {
+    if (block.text) continue;
+    if (!block.firstMessageId || !block.lastMessageId) {
+      console.warn(
+        `Skipping hydration for block missing boundaries in channel ${channel.id}`,
+      );
+      continue;
+    }
+    const hydrated = await fetchBlockTextRange(
+      channel,
+      block.firstMessageId,
+      block.lastMessageId,
+      client,
+    );
+    if (hydrated) {
+      block.text = hydrated;
+    }
+  }
+}
+
+async function fetchBlockTextRange(
+  channel: Message['channel'],
+  firstMessageId: string,
+  lastMessageId: string,
+  client: Client,
+): Promise<string | null> {
+  if (!channel.isTextBased()) {
+    return null;
+  }
+
+  let firstMessage: Message | null = null;
+  try {
+    firstMessage = await channel.messages.fetch(firstMessageId);
+  } catch {
+    console.warn(
+      `Failed to fetch first message ${firstMessageId} for cached block in ${channel.id}`,
+    );
+    return null;
+  }
+
+  const collected: Message[] = [firstMessage];
+  let cursor = firstMessageId;
+  const target = BigInt(lastMessageId);
+  let reachedEnd = BigInt(firstMessageId) >= target;
+
+  while (!reachedEnd) {
+    const fetched: Collection<string, Message> = await channel.messages.fetch({
+      limit: 100,
+      after: cursor,
+    });
+    if (fetched.size === 0) {
+      break;
+    }
+
+    const sorted = [...fetched.values()].sort((a, b) =>
+      BigInt(a.id) < BigInt(b.id) ? -1 : 1,
+    );
+
+    for (const msg of sorted) {
+      collected.push(msg);
+      cursor = msg.id;
+      if (BigInt(msg.id) >= target) {
+        reachedEnd = true;
+        break;
+      }
+    }
+
+    if (fetched.size < 100) {
+      break;
+    }
+  }
+
+  const formatted = collected
+    .filter((msg) => {
+      const id = BigInt(msg.id);
+      return id >= BigInt(firstMessageId) && id <= target;
+    })
+    .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+    .map((msg) => {
+      const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
+      const attachmentSummary = buildAttachmentSummary(msg.attachments);
+      const messageContent = replaceUserMentions(
+        msg.content || '(empty message)',
+        msg,
+        client,
+      );
+      const storedContent = attachmentSummary
+        ? `${messageContent}\n${attachmentSummary}`
+        : messageContent;
+      const authorName = isAssistant
+        ? getBotCanonicalName(client)
+        : getUserCanonicalName(msg);
+      return formatAuthoredContent(authorName, storedContent);
+    })
+    .join('\n')
+    .trim();
+
+  return formatted.length > 0 ? formatted : null;
+}
 
 export type TextThreadChannel = PublicThreadChannel | PrivateThreadChannel;
 
@@ -86,8 +197,12 @@ export async function buildConversationContext(params: {
 
     // Reuse parent's cached blocks (these will hit Anthropic's cache)
     const existingParentBlocks = cacheAccess.getCachedBlocks(parentChannelId);
+    await hydrateCachedBlockTexts(channel.parent, client, existingParentBlocks);
 
     for (const block of existingParentBlocks) {
+      if (!block.text) {
+        continue;
+      }
       if (parentContextTokens + block.tokenCount <= parentBudget) {
         parentCachedBlocks.push(block.text);
         parentContextTokens += block.tokenCount;
@@ -109,6 +224,7 @@ export async function buildConversationContext(params: {
 
   // Get existing cached blocks
   const existingCachedBlocks = cacheAccess.getCachedBlocks(channelId);
+  await hydrateCachedBlockTexts(channel, client, existingCachedBlocks);
   const lastCachedMessageId = cacheAccess.getLastCachedMessageId(channelId);
   const existingTailState = tailCache.get(channelId);
   const effectiveAfterId = existingTailState?.lastFetchedId ?? lastCachedMessageId;
@@ -192,10 +308,10 @@ export async function buildConversationContext(params: {
     content: msg.content,
   }));
 
-  const allCachedBlocks = [
-    ...parentCachedBlocks,
-    ...finalCachedBlocks.map((block) => block.text),
-  ];
+  const channelCachedTexts = finalCachedBlocks.flatMap((block) =>
+    block.text ? [block.text] : [],
+  );
+  const allCachedBlocks = [...parentCachedBlocks, ...channelCachedTexts];
 
   const totalCachedTokens = parentContextTokens + channelCachedTokens;
   const tailTokens = combinedTokenCount;
@@ -251,69 +367,58 @@ async function fetchMessagesAfter(
   const messages: FetchedMessage[] = [];
   let totalTokens = 0;
 
-  // Fetch all messages we need
-  const allFetched: Message[] = [];
-  let lastId: string | undefined;
+  let fetchCursor: string | undefined = afterMessageId ?? undefined;
 
   while (totalTokens < tokenBudget) {
     const fetched: Collection<string, Message> = await channel.messages.fetch({
       limit: 100,
-      before: lastId,
+      after: fetchCursor,
     });
 
     if (fetched.size === 0) {
       break;
     }
 
-    let reachedCachedMessage = false;
-    for (const msg of fetched.values()) {
-      if (afterMessageId && msg.id === afterMessageId) {
-        reachedCachedMessage = true;
-        break;
-      }
-      allFetched.push(msg);
-    }
-
-    if (reachedCachedMessage) {
-      break;
-    }
-
-    lastId = fetched.last()?.id;
-  }
-
-  // Process in chronological order (oldest first)
-  allFetched.reverse();
-
-  for (const msg of allFetched) {
-    const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
-    const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
-    const attachmentSummary = buildAttachmentSummary(msg.attachments);
-    const messageContent = replaceUserMentions(
-      msg.content || '(empty message)',
-      msg,
-      client,
+    const sorted = [...fetched.values()].sort((a, b) =>
+      BigInt(a.id) < BigInt(b.id) ? -1 : 1,
     );
-    const storedContent = attachmentSummary
-      ? `${messageContent}\n${attachmentSummary}`
-      : messageContent;
-    const authorName = isAssistant
-      ? getBotCanonicalName(client)
-      : getUserCanonicalName(msg);
 
-    const formattedText = formatAuthoredContent(authorName, storedContent);
-    const tokens = estimateTokens(formattedText) + 4;
+    for (const msg of sorted) {
+      const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
+      const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
+      const attachmentSummary = buildAttachmentSummary(msg.attachments);
+      const messageContent = replaceUserMentions(
+        msg.content || '(empty message)',
+        msg,
+        client,
+      );
+      const storedContent = attachmentSummary
+        ? `${messageContent}\n${attachmentSummary}`
+        : messageContent;
+      const authorName = isAssistant
+        ? getBotCanonicalName(client)
+        : getUserCanonicalName(msg);
 
-    if (totalTokens + tokens > tokenBudget) {
-      break;
+      const formattedText = formatAuthoredContent(authorName, storedContent);
+      const tokens = estimateTokens(formattedText) + 4;
+
+      if (totalTokens + tokens > tokenBudget) {
+        return messages;
+      }
+
+      messages.push({
+        id: msg.id,
+        formattedText,
+        tokens,
+        role,
+      });
+      totalTokens += tokens;
+      fetchCursor = msg.id;
     }
 
-    messages.push({
-      id: msg.id,
-      formattedText,
-      tokens,
-      role,
-    });
-    totalTokens += tokens;
+    if (fetched.size < 100) {
+      break;
+    }
   }
 
   return messages;

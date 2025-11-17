@@ -48,7 +48,18 @@ function loadCache() {
     try {
         if (fs.existsSync(CACHE_FILE)) {
             const data = fs.readFileSync(CACHE_FILE, 'utf-8');
-            cacheStore = JSON.parse(data);
+            const parsed = JSON.parse(data);
+            cacheStore = {
+                channels: Object.fromEntries(Object.entries(parsed.channels || {}).map(([channelId, channelCache]) => {
+                    const blocks = channelCache.blocks?.map((block) => ({
+                        text: block.text,
+                        firstMessageId: block.firstMessageId || block.lastMessageId,
+                        lastMessageId: block.lastMessageId,
+                        tokenCount: block.tokenCount,
+                    })) || [];
+                    return [channelId, { blocks }];
+                })),
+            };
             console.log(`Loaded cache with ${Object.keys(cacheStore.channels).length} channel(s)`);
         }
         else {
@@ -63,7 +74,19 @@ function loadCache() {
 // Save cache to disk
 function saveCache() {
     try {
-        fs.writeFileSync(CACHE_FILE, JSON.stringify(cacheStore, null, 2));
+        const serializable = {
+            channels: Object.fromEntries(Object.entries(cacheStore.channels).map(([channelId, channelCache]) => [
+                channelId,
+                {
+                    blocks: channelCache.blocks.map((block) => ({
+                        firstMessageId: block.firstMessageId,
+                        lastMessageId: block.lastMessageId,
+                        tokenCount: block.tokenCount,
+                    })),
+                },
+            ])),
+        };
+        fs.writeFileSync(CACHE_FILE, JSON.stringify(serializable, null, 2));
     }
     catch (err) {
         console.error('Failed to save cache file:', err);
@@ -92,27 +115,34 @@ function updateCache(channelId, newMessages, tokensPerBlock = DEFAULT_TOKENS_PER
     let accumulatedText = '';
     let accumulatedTokens = 0;
     let lastMessageId = '';
+    let blockStartId = null;
+    let createdBlock = false;
     for (const msg of newMessages) {
+        if (!blockStartId) {
+            blockStartId = msg.id;
+        }
         accumulatedText += msg.formattedText + '\n';
         accumulatedTokens += msg.tokens;
         lastMessageId = msg.id;
         // When we hit the token threshold, create a new cached block
         if (accumulatedTokens >= tokensPerBlock) {
+            const firstMessageId = blockStartId ?? lastMessageId;
             channelCache.blocks.push({
                 text: accumulatedText.trimEnd(),
+                firstMessageId,
                 lastMessageId,
                 tokenCount: accumulatedTokens,
             });
             console.log(`Created new cache block for channel ${channelId} (~${accumulatedTokens} tokens)`);
+            createdBlock = true;
             accumulatedText = '';
             accumulatedTokens = 0;
+            blockStartId = null;
         }
     }
     // Don't cache the remaining tail - it will be the "fresh" part
     // Only save if we created new blocks
-    if (channelCache.blocks.length > 0 &&
-        newMessages.length > 0 &&
-        accumulatedTokens < tokensPerBlock) {
+    if (createdBlock) {
         saveCache();
     }
 }

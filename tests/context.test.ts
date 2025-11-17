@@ -14,7 +14,12 @@ type TestFetchedMessage = {
 };
 
 type CacheRecord = {
-  blocks: Array<{ text: string; tokenCount: number; lastMessageId: string }>;
+  blocks: Array<{
+    text?: string;
+    tokenCount: number;
+    firstMessageId: string;
+    lastMessageId: string;
+  }>;
   lastId: string | null;
 };
 
@@ -82,7 +87,142 @@ afterEach(() => {
   getContextModule().clearTailCache();
 });
 
+function createMockChannel(messages: MockMessage[]): Message['channel'] {
+  const messageMap = new Map(
+    messages.map((m) => [
+      m.id,
+      {
+        id: m.id,
+        content: m.content,
+        author: { id: m.authorId, username: m.authorId, tag: m.authorId },
+        attachments: [],
+        mentions: {
+          users: new Map(),
+        },
+      },
+    ]),
+  );
+
+  return {
+    id: 'channel',
+    type: ChannelType.GuildText,
+    isTextBased: () => true,
+    parent: null,
+    parentId: null,
+    messages: {
+      async fetch(idOrOptions?: any) {
+        if (typeof idOrOptions === 'string') {
+          return messageMap.get(idOrOptions) as unknown as Message;
+        }
+        const after = idOrOptions?.after;
+        const result = [...messageMap.values()]
+          .filter((msg) => !after || BigInt(msg.id) > BigInt(after))
+          .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+          .slice(0, idOrOptions?.limit ?? 100);
+        const collection = new Map(result.map((msg) => [msg.id, msg]));
+        (collection as any).last = () => result[result.length - 1];
+        return collection as any;
+      },
+    },
+  } as Message['channel'];
+}
+
 describe('buildConversationContext', () => {
+  it('hydrates cached block text from metadata-only entries', async () => {
+    const channelMessages: MockMessage[] = [
+      { id: '90', content: 'Alice says hi', authorId: 'alice' },
+      { id: '95', content: 'Bob replies', authorId: 'bob' },
+    ];
+    const channel = createMockChannel(channelMessages);
+    const metadataBlock = {
+      text: undefined as unknown as string,
+      tokenCount: 100,
+      firstMessageId: '90',
+      lastMessageId: '95',
+    };
+    const { cacheAccess } = createCacheAccess({
+      channel: {
+        blocks: [metadataBlock],
+        lastId: '95',
+      },
+    });
+
+    const context = getContextModule();
+    const conversation = await context.buildConversationContext({
+      channel,
+      maxContextTokens: 1000,
+      client: fakeClient,
+      botDisplayName: 'UnitTester',
+      cacheAccess,
+      fetchMessages: async () => [],
+    });
+
+    expect(metadataBlock.text).toContain('Alice');
+    expect(conversation.cachedBlocks[0]).toContain('Alice says hi');
+  });
+
+  it('fetches new tail messages using last tail id as cursor', async () => {
+    const channel = createMockChannel([]);
+    const { cacheAccess } = createCacheAccess({
+      channel: {
+        blocks: [],
+        lastId: null,
+      },
+    });
+
+    const recordedAfterIds: Array<string | null> = [];
+    const fetchMessages = vi
+      .fn()
+      .mockImplementationOnce(
+        async (_channel: Message['channel'], afterId: string | null) => {
+          recordedAfterIds.push(afterId);
+          return [
+            {
+              id: '300',
+              formattedText: 'User: first tail',
+              tokens: 10,
+              role: 'user',
+            },
+          ];
+        },
+      )
+      .mockImplementationOnce(
+        async (_channel: Message['channel'], afterId: string | null) => {
+          recordedAfterIds.push(afterId);
+          return [
+            {
+              id: '301',
+              formattedText: 'User: second tail',
+              tokens: 10,
+              role: 'user',
+            },
+          ];
+        },
+      );
+
+    const context = getContextModule();
+    await context.buildConversationContext({
+      channel,
+      maxContextTokens: 1000,
+      client: fakeClient,
+      botDisplayName: 'UnitTester',
+      cacheAccess,
+      fetchMessages: fetchMessages as any,
+    });
+
+    await context.buildConversationContext({
+      channel,
+      maxContextTokens: 1000,
+      client: fakeClient,
+      botDisplayName: 'UnitTester',
+      cacheAccess,
+      fetchMessages: fetchMessages as any,
+    });
+
+    expect(recordedAfterIds[0]).toBeNull();
+    expect(recordedAfterIds[1]).toBe('300');
+  });
+
   it('fetches a guaranteed tail even when cached blocks fill the budget', async () => {
     const channelId = 'channel';
     const existingBlockText = 'Earlier cached transcript';
@@ -92,6 +232,7 @@ describe('buildConversationContext', () => {
           {
             text: existingBlockText,
             tokenCount: 100000,
+            firstMessageId: '150',
             lastMessageId: '200',
           },
         ],
@@ -144,6 +285,7 @@ describe('buildConversationContext', () => {
           {
             text: parentBlockText,
             tokenCount: 1500,
+            firstMessageId: '10',
             lastMessageId: '20',
           },
         ],
@@ -205,6 +347,7 @@ describe('buildConversationContext', () => {
           {
             text: existingBlockText,
             tokenCount: 5000,
+            firstMessageId: '90',
             lastMessageId: '100',
           },
         ],
@@ -263,3 +406,8 @@ describe('buildConversationContext', () => {
     expect(secondConversation.tail).toHaveLength(2);
   });
 });
+type MockMessage = {
+  id: string;
+  content: string;
+  authorId: string;
+};

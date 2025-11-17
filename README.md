@@ -178,7 +178,7 @@ This feels less like interrogation, more like observation followed by participat
 
 For Anthropic cost optimization:
 - Conversation split into cached blocks (stable) + tail (fresh)
-- Cached blocks stored in `conversation-cache.json`
+- Cached block metadata stored in `conversation-cache.json` (only message IDs/token counts, no transcript text)
 - Same bytes sent = cache hit
 - Only writes to JSON when block boundaries roll
 - Persists across process restarts

@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe('cache persistence', () => {
-  it('writes cached blocks to disk when new block is formed', async () => {
+  it('writes metadata only when new block is formed', async () => {
     const cache = await import('../src/cache');
     cache.updateCache(
       'channel-1',
@@ -24,16 +24,34 @@ describe('cache persistence', () => {
 
     expect(fs.existsSync(CACHE_FILE)).toBe(true);
     const written = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8')) as {
-      channels: Record<string, unknown>;
+      channels: Record<
+        string,
+        {
+          blocks: Array<{
+            firstMessageId: string;
+            lastMessageId: string;
+            tokenCount: number;
+            text?: string;
+          }>;
+        }
+      >;
     };
-    expect(written.channels['channel-1']).toBeDefined();
+    const channelData = written.channels['channel-1'];
+    expect(channelData).toBeDefined();
+    expect(channelData.blocks).toHaveLength(1);
+    expect(channelData.blocks[0]).toEqual({
+      firstMessageId: '1',
+      lastMessageId: '2',
+      tokenCount: 40000,
+    });
+    expect(channelData.blocks[0]?.text).toBeUndefined();
   });
 
-  it('loads cached blocks from disk', async () => {
+  it('hydrates missing firstMessageId when loading from older format', async () => {
     const payload = {
       channels: {
         'channel-2': {
-          blocks: [{ text: 'Alice: hi', lastMessageId: '3', tokenCount: 100 }],
+          blocks: [{ lastMessageId: '3', tokenCount: 100 }],
         },
       },
     };
@@ -42,6 +60,8 @@ describe('cache persistence', () => {
     cache.loadCache();
     const blocks = cache.getCachedBlocks('channel-2');
     expect(blocks).toHaveLength(1);
-    expect(blocks[0]?.text).toBe('Alice: hi');
+    expect(blocks[0]?.firstMessageId).toBe('3');
+    expect(blocks[0]?.lastMessageId).toBe('3');
+    expect(blocks[0]?.text).toBeUndefined();
   });
 });
