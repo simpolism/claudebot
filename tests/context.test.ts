@@ -115,10 +115,30 @@ function createMockChannel(messages: MockMessage[]): Message['channel'] {
           return messageMap.get(idOrOptions) as unknown as Message;
         }
         const after = idOrOptions?.after;
-        const result = [...messageMap.values()]
-          .filter((msg) => !after || BigInt(msg.id) > BigInt(after))
-          .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
-          .slice(0, idOrOptions?.limit ?? 100);
+        const before = idOrOptions?.before;
+        const limit = idOrOptions?.limit ?? 100;
+
+        let result = [...messageMap.values()];
+
+        if (after) {
+          // Fetch messages AFTER the given ID (going forward in time)
+          result = result.filter((msg) => BigInt(msg.id) > BigInt(after));
+          // Sort chronologically and take first `limit`
+          result = result.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+          result = result.slice(0, limit);
+        } else if (before) {
+          // Fetch messages BEFORE the given ID (going backward in time)
+          result = result.filter((msg) => BigInt(msg.id) < BigInt(before));
+          // Sort chronologically and take LAST `limit` (most recent before cursor)
+          result = result.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+          result = result.slice(-limit);
+        } else {
+          // No cursor: Discord returns MOST RECENT messages (this is key!)
+          // Sort chronologically and take LAST `limit`
+          result = result.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+          result = result.slice(-limit);
+        }
+
         const collection = new Map(result.map((msg) => [msg.id, msg]));
         (collection as any).last = () => result[result.length - 1];
         return collection as any;
@@ -126,6 +146,97 @@ function createMockChannel(messages: MockMessage[]): Message['channel'] {
     },
   } as Message['channel'];
 }
+
+describe('fetchMessagesAfter pagination', () => {
+  it('fetches all available history up to token budget on empty cache', async () => {
+    // Bug: When starting with no cache, the function only fetches 100 messages
+    // because it uses `after: undefined` which returns newest messages,
+    // then tries to fetch `after: <newest_id>` which returns nothing.
+
+    // Create 250 messages (more than one fetch batch of 100)
+    const allMessages: MockMessage[] = [];
+    for (let i = 1; i <= 250; i++) {
+      allMessages.push({
+        id: String(i),
+        content: `Message ${i}`,
+        authorId: i % 2 === 0 ? 'alice' : 'bob',
+      });
+    }
+
+    const channel = createMockChannel(allMessages);
+    const { cacheAccess } = createCacheAccess({
+      channel: { blocks: [], lastId: null },
+    });
+
+    const context = getContextModule();
+    // With 250 messages averaging ~20 chars each = ~5 tokens per message
+    // Budget of 2000 tokens should fetch ~400 messages worth, so all 250
+    const conversation = await context.buildConversationContext({
+      channel,
+      maxContextTokens: 2000,
+      client: fakeClient,
+      botDisplayName: 'UnitTester',
+      cacheAccess,
+    });
+
+    // Should have fetched significantly more than 100 messages
+    expect(conversation.tail.length).toBeGreaterThan(100);
+    // Should have fetched all 250 messages (well within budget)
+    expect(conversation.tail.length).toBe(250);
+    // Should be in chronological order (oldest first)
+    expect(conversation.tail[0]?.content).toContain('Message 1');
+    expect(conversation.tail[249]?.content).toContain('Message 250');
+  });
+
+  it('continues fetching incrementally after initial load', async () => {
+    // First load gets history, second load gets only new messages
+    const initialMessages: MockMessage[] = [];
+    for (let i = 1; i <= 50; i++) {
+      initialMessages.push({
+        id: String(i),
+        content: `Message ${i}`,
+        authorId: 'alice',
+      });
+    }
+
+    const channel = createMockChannel(initialMessages);
+    const { cacheAccess } = createCacheAccess({
+      channel: { blocks: [], lastId: null },
+    });
+
+    const context = getContextModule();
+
+    // First fetch - should get all 50 messages
+    const first = await context.buildConversationContext({
+      channel,
+      maxContextTokens: 10000,
+      client: fakeClient,
+      botDisplayName: 'UnitTester',
+      cacheAccess,
+    });
+    expect(first.tail.length).toBe(50);
+
+    // Add new messages
+    const updatedMessages = [
+      ...initialMessages,
+      { id: '51', content: 'New message 51', authorId: 'bob' },
+      { id: '52', content: 'New message 52', authorId: 'alice' },
+    ];
+    const updatedChannel = createMockChannel(updatedMessages);
+
+    // Second fetch - should get the 2 new messages appended to tail
+    const second = await context.buildConversationContext({
+      channel: updatedChannel,
+      maxContextTokens: 10000,
+      client: fakeClient,
+      botDisplayName: 'UnitTester',
+      cacheAccess,
+    });
+    expect(second.tail.length).toBe(52);
+    expect(second.tail[50]?.content).toContain('New message 51');
+    expect(second.tail[51]?.content).toContain('New message 52');
+  });
+});
 
 describe('buildConversationContext', () => {
   it('hydrates cached block text from metadata-only entries', async () => {

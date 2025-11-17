@@ -229,11 +229,6 @@ export async function buildConversationContext(params: {
   const existingTailState = tailCache.get(channelId);
   const effectiveAfterId = existingTailState?.lastFetchedId ?? lastCachedMessageId;
 
-  // Calculate token budget used by cached blocks
-  const cachedTokens = existingCachedBlocks.reduce(
-    (sum, block) => sum + block.tokenCount,
-    0,
-  );
   // Fetch up to the full thread budget every time so we hydrate cached blocks
   // quickly and keep a deep tail.
   const fetchBudget = Math.max(threadBudget, GUARANTEED_TAIL_TOKENS);
@@ -362,10 +357,26 @@ async function fetchMessagesAfter(
     return [];
   }
 
+  // If we have a cursor, fetch forward (incremental updates)
+  // If no cursor, fetch backward through history (initial load)
+  if (afterMessageId !== null) {
+    return fetchMessagesForward(channel as TextBasedChannel, afterMessageId, tokenBudget, client);
+  } else {
+    return fetchMessagesBackward(channel as TextBasedChannel, tokenBudget, client);
+  }
+}
+
+type TextBasedChannel = Message['channel'] & { isTextBased(): boolean };
+
+async function fetchMessagesForward(
+  channel: TextBasedChannel,
+  afterMessageId: string,
+  tokenBudget: number,
+  client: Client,
+): Promise<FetchedMessage[]> {
   const messages: FetchedMessage[] = [];
   let totalTokens = 0;
-
-  let fetchCursor: string | undefined = afterMessageId ?? undefined;
+  let fetchCursor: string = afterMessageId;
 
   while (totalTokens < tokenBudget) {
     const fetched: Collection<string, Message> = await channel.messages.fetch({
@@ -382,35 +393,13 @@ async function fetchMessagesAfter(
     );
 
     for (const msg of sorted) {
-      const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
-      const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
-      const attachmentSummary = buildAttachmentSummary(msg.attachments);
-      const messageContent = replaceUserMentions(
-        msg.content || '(empty message)',
-        msg,
-        client,
-      );
-      const storedContent = attachmentSummary
-        ? `${messageContent}\n${attachmentSummary}`
-        : messageContent;
-      const authorName = isAssistant
-        ? getBotCanonicalName(client)
-        : getUserCanonicalName(msg);
-
-      const formattedText = formatAuthoredContent(authorName, storedContent);
-      const tokens = estimateTokens(formattedText) + 4;
-
-      if (totalTokens + tokens > tokenBudget) {
+      const formatted = formatMessageForContext(msg, client);
+      if (totalTokens + formatted.tokens > tokenBudget) {
         return messages;
       }
 
-      messages.push({
-        id: msg.id,
-        formattedText,
-        tokens,
-        role,
-      });
-      totalTokens += tokens;
+      messages.push(formatted);
+      totalTokens += formatted.tokens;
       fetchCursor = msg.id;
     }
 
@@ -420,6 +409,94 @@ async function fetchMessagesAfter(
   }
 
   return messages;
+}
+
+async function fetchMessagesBackward(
+  channel: TextBasedChannel,
+  tokenBudget: number,
+  client: Client,
+): Promise<FetchedMessage[]> {
+  // Fetch history going backward from most recent
+  const batches: FetchedMessage[][] = [];
+  let totalTokens = 0;
+  let beforeCursor: string | undefined = undefined;
+
+  while (totalTokens < tokenBudget) {
+    const fetched: Collection<string, Message> = await channel.messages.fetch({
+      limit: 100,
+      before: beforeCursor,
+    });
+
+    if (fetched.size === 0) {
+      break;
+    }
+
+    // Sort oldest to newest within this batch
+    const sorted = [...fetched.values()].sort((a, b) =>
+      BigInt(a.id) < BigInt(b.id) ? -1 : 1,
+    );
+
+    const batchMessages: FetchedMessage[] = [];
+    let batchTokens = 0;
+
+    for (const msg of sorted) {
+      const formatted = formatMessageForContext(msg, client);
+      batchMessages.push(formatted);
+      batchTokens += formatted.tokens;
+    }
+
+    // Prepend this batch (older messages go first)
+    batches.unshift(batchMessages);
+    totalTokens += batchTokens;
+
+    // Move cursor to oldest message in this batch for next iteration
+    beforeCursor = sorted[0]?.id;
+
+    if (fetched.size < 100) {
+      break;
+    }
+  }
+
+  // Flatten all batches and trim to budget
+  const allMessages = batches.flat();
+  const result: FetchedMessage[] = [];
+  let usedTokens = 0;
+
+  // Trim oldest messages if we exceeded budget
+  for (let i = allMessages.length - 1; i >= 0; i--) {
+    const msg = allMessages[i];
+    if (!msg) continue;
+    if (usedTokens + msg.tokens <= tokenBudget) {
+      result.unshift(msg);
+      usedTokens += msg.tokens;
+    } else {
+      // Budget exceeded, stop adding older messages
+      break;
+    }
+  }
+
+  return result;
+}
+
+function formatMessageForContext(msg: Message, client: Client): FetchedMessage {
+  const isAssistant = Boolean(client.user) && msg.author.id === client.user?.id;
+  const role: 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
+  const attachmentSummary = buildAttachmentSummary(msg.attachments);
+  const messageContent = replaceUserMentions(msg.content || '(empty message)', msg, client);
+  const storedContent = attachmentSummary
+    ? `${messageContent}\n${attachmentSummary}`
+    : messageContent;
+  const authorName = isAssistant ? getBotCanonicalName(client) : getUserCanonicalName(msg);
+
+  const formattedText = formatAuthoredContent(authorName, storedContent);
+  const tokens = estimateTokens(formattedText) + 4;
+
+  return {
+    id: msg.id,
+    formattedText,
+    tokens,
+    role,
+  };
 }
 
 function getBotCanonicalName(client: Client): string {

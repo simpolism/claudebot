@@ -172,12 +172,59 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
   return { config: botConfig, client, aiProvider };
 }
 
+async function prefetchChannelContext(
+  instance: BotInstance,
+  channelIds: string[],
+): Promise<void> {
+  const { config, client } = instance;
+  const resolved = resolveConfig(config);
+  const botDisplayName = getBotCanonicalName(client);
+
+  if (channelIds.length === 0) {
+    console.log(`[${config.name}] No channels configured for prefetch`);
+    return;
+  }
+
+  console.log(
+    `[${config.name}] Prefetching context for ${channelIds.length} channel(s)...`,
+  );
+
+  for (const channelId of channelIds) {
+    try {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || !channel.isTextBased()) {
+        console.warn(`[${config.name}] Channel ${channelId} not found or not text-based`);
+        continue;
+      }
+
+      const startTime = Date.now();
+      await buildConversationContext({
+        channel,
+        maxContextTokens: resolved.maxContextTokens,
+        client,
+        botDisplayName,
+      });
+      const duration = Date.now() - startTime;
+      console.log(`[${config.name}] Prefetched ${channelId} in ${duration}ms`);
+    } catch (err) {
+      console.error(`[${config.name}] Failed to prefetch ${channelId}:`, err);
+    }
+  }
+
+  console.log(`[${config.name}] Prefetch complete`);
+}
+
 function setupBotEvents(instance: BotInstance): void {
   const { config, client, aiProvider } = instance;
   const resolved = resolveConfig(config);
 
   client.once(Events.ClientReady, (c) => {
     console.log(`[${config.name}] Logged in as ${c.user.tag}`);
+
+    // Prefetch context for configured channels immediately after login
+    if (globalConfig.mainChannelIds.length > 0) {
+      void prefetchChannelContext(instance, globalConfig.mainChannelIds);
+    }
   });
 
   client.on(Events.MessageCreate, async (message) => {
