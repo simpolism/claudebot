@@ -44,6 +44,7 @@ exports.botConfigs = [
         geminiApiKey: process.env.GOOGLE_API_KEY || '',
         geminiOutputMode: 'both',
         maxContextTokens: 30000,
+        systemPrompt: 'You are an image-generating AI assistant. When users request images, drawings, or visual content, you MUST generate an actual image - do not just describe it. Always include a generated image when the context calls for visual output.',
     },
 ];
 // Filter out bots without tokens (allows partial configuration)
@@ -71,5 +72,6 @@ function resolveConfig(botConfig) {
         temperature: botConfig.temperature ?? exports.globalConfig.temperature,
         geminiApiKey: botConfig.geminiApiKey ?? '',
         geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
+        systemPrompt: botConfig.systemPrompt ?? '',
     };
 }

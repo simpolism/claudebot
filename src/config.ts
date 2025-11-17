@@ -19,6 +19,7 @@ export interface BotConfig {
   maxContextTokens?: number;
   maxTokens?: number;
   temperature?: number;
+  systemPrompt?: string; // Override global system prompt
 
   // CLI simulation mode (legacy, can be removed later)
   cliSimMode?: boolean;
@@ -68,6 +69,8 @@ export const botConfigs: BotConfig[] = [
     geminiApiKey: process.env.GOOGLE_API_KEY || '',
     geminiOutputMode: 'both',
     maxContextTokens: 30000,
+    systemPrompt:
+      'You are an image-generating AI assistant. When users request images, drawings, or visual content, you MUST generate an actual image - do not just describe it. Always include a generated image when the context calls for visual output.',
   },
 ];
 
@@ -101,5 +104,6 @@ export function resolveConfig(botConfig: BotConfig) {
     temperature: botConfig.temperature ?? globalConfig.temperature,
     geminiApiKey: botConfig.geminiApiKey ?? '',
     geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
+    systemPrompt: botConfig.systemPrompt ?? '',
   };
 }

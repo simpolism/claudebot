@@ -341,11 +341,13 @@ class GeminiProvider {
             { role: 'model', parts: [{ text: `${botDisplayName}:` }] },
         ];
         console.log(`[GeminiProvider] Sending ${contentParts.length} content parts to model`);
+        const trimmedSystemPrompt = this.systemPrompt.trim();
         const response = await this.client.models.generateContent({
             model: this.model,
             contents,
             config: {
                 responseModalities,
+                systemInstruction: trimmedSystemPrompt || undefined,
             },
         });
         console.log('[GeminiProvider] Full API Response:', JSON.stringify(response, null, 2));

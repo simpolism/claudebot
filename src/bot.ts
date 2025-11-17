@@ -134,7 +134,7 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
 
   const systemPrompt = resolved.cliSimMode
     ? "The assistant is in CLI simulation mode, and responds to the user's CLI commands only with the output of the command."
-    : '';
+    : resolved.systemPrompt || '';
 
   const prefillCommand = resolved.cliSimMode ? '<cmd>cat untitled.txt</cmd>' : '';
 
