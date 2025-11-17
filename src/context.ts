@@ -1,15 +1,15 @@
 import { Attachment, Client, Message } from 'discord.js';
-import { getContext, appendMessage, getBlockBoundaries } from './message-store';
+import { getContext, appendMessage, getBlockBoundaries, lazyLoadThread } from './message-store';
 import { ConversationData, ImageBlock, SimpleMessage } from './types';
 
 // ---------- Context Building ----------
 
-export function buildConversationContext(params: {
+export async function buildConversationContext(params: {
   channel: Message['channel'];
   maxContextTokens: number;
   client: Client;
   botDisplayName: string;
-}): ConversationData {
+}): Promise<ConversationData> {
   const { channel, maxContextTokens, client, botDisplayName } = params;
 
   if (!channel.isTextBased() || !client.user) {
@@ -22,6 +22,11 @@ export function buildConversationContext(params: {
   const isThread = channel.isThread();
   const threadId = isThread ? channel.id : null;
   const parentChannelId = isThread ? channel.parentId : undefined;
+
+  // Lazy-load thread from database if needed
+  if (isThread && threadId && parentChannelId) {
+    await lazyLoadThread(threadId, parentChannelId, client);
+  }
 
   const channelResult = getContext(
     channel.id,

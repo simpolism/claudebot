@@ -263,7 +263,7 @@ function setupBotEvents(instance: BotInstance): void {
 
       try {
         const contextStart = Date.now();
-        const conversationData = buildConversationContext({
+        const conversationData = await buildConversationContext({
           channel: msg.channel,
           maxContextTokens: resolved.maxContextTokens,
           client,

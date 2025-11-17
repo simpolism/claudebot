@@ -6,7 +6,8 @@ import * as db from './database';
 // ---------- Types ----------
 
 export interface StoredMessage {
-  id: string;
+  rowId?: number; // Database row ID (undefined until inserted)
+  id: string; // Discord message ID
   channelId: string;
   threadId: string | null;
   parentChannelId: string;
@@ -17,8 +18,10 @@ export interface StoredMessage {
 }
 
 export interface BlockBoundary {
-  firstMessageId: string;
-  lastMessageId: string;
+  firstMessageId: string; // Keep for JSON backward compatibility
+  lastMessageId: string; // Keep for JSON backward compatibility
+  firstRowId?: number; // For DB-backed boundaries
+  lastRowId?: number; // For DB-backed boundaries
   tokenCount: number;
 }
 
@@ -36,6 +39,7 @@ const DEFAULT_TOKENS_PER_BLOCK = 30000;
 const messagesByChannel = new Map<string, StoredMessage[]>();
 const messageIdsByChannel = new Map<string, Set<string>>(); // O(1) deduplication
 const blockBoundaries = new Map<string, BlockBoundary[]>();
+const hydratedChannels = new Map<string, boolean>(); // Track lazy-loaded threads
 
 // ---------- Helper Functions ----------
 
@@ -105,19 +109,25 @@ export function appendStoredMessage(stored: StoredMessage): void {
   }
 
   messageIds.add(stored.id);
-  messagesByChannel.get(channelId)!.push(stored);
 
-  // Write to database in parallel if feature flag enabled
+  // Write to database first if feature flag enabled (to get row_id)
   if (globalConfig.useDatabaseStorage) {
     try {
-      db.insertMessage({
+      const rowId = db.insertMessage({
         ...stored,
         createdAt: Date.now(),
       });
+
+      // Update stored message with row_id
+      if (rowId !== null) {
+        stored.rowId = rowId;
+      }
     } catch (err) {
       console.error('[Database] Failed to insert message:', err);
     }
   }
+
+  messagesByChannel.get(channelId)!.push(stored);
 
   checkAndFreezeBlocks(channelId);
 }
@@ -424,6 +434,8 @@ function freezeBlocks(channelId: string, options: FreezeOptions = {}): number {
         const boundary: BlockBoundary = {
           firstMessageId: firstMsg.id,
           lastMessageId: lastMsg.id,
+          firstRowId: firstMsg.rowId,
+          lastRowId: lastMsg.rowId,
           tokenCount: accumulatedTokens,
         };
         boundaries.push(boundary);
@@ -431,11 +443,17 @@ function freezeBlocks(channelId: string, options: FreezeOptions = {}): number {
         // Write to database in parallel if feature flag enabled
         if (globalConfig.useDatabaseStorage) {
           try {
+            // Detect if this is a thread (messages have threadId set)
+            const isThread = firstMsg.threadId != null;
+            const threadIdForDb = isThread ? firstMsg.threadId : null;
+
             db.insertBlockBoundary({
               channelId,
-              threadId: null, // No thread support yet
+              threadId: threadIdForDb,
               firstMessageId: boundary.firstMessageId,
               lastMessageId: boundary.lastMessageId,
+              firstRowId: boundary.firstRowId,
+              lastRowId: boundary.lastRowId,
               tokenCount: boundary.tokenCount,
               createdAt: Date.now(),
             });
@@ -596,6 +614,154 @@ export async function loadHistoryFromDiscord(
   }
 }
 
+/**
+ * Lazy-load a thread from the database on first access.
+ * Handles reset boundaries and backfills missing messages from Discord.
+ */
+export async function lazyLoadThread(
+  threadId: string,
+  parentChannelId: string,
+  client: Client,
+): Promise<void> {
+  // Check if already hydrated
+  if (hydratedChannels.get(threadId)) {
+    return;
+  }
+
+  // Mark as hydrated (even if empty, to avoid repeated attempts)
+  hydratedChannels.set(threadId, true);
+
+  if (!globalConfig.useDatabaseStorage) {
+    // Without database, threads start empty
+    console.log(`[LazyLoad] Thread ${threadId} starting empty (no database)`);
+    ensureChannelInitialized(threadId);
+    return;
+  }
+
+  console.log(`[LazyLoad] Loading thread ${threadId} from database...`);
+
+  try {
+    // Check if thread was reset
+    const resetInfo = db.getThreadResetInfo(threadId);
+
+    let messages: StoredMessage[] = [];
+    let boundaries: BlockBoundary[] = [];
+
+    if (resetInfo) {
+      // Thread was reset - only load messages after reset boundary
+      console.log(`[LazyLoad] Thread ${threadId} was reset at row_id ${resetInfo.lastResetRowId}`);
+      messages = db.getMessagesAfterRow(threadId, resetInfo.lastResetRowId, threadId);
+      boundaries = []; // No boundaries - fresh start after reset
+    } else {
+      // No reset - load everything from database
+      messages = db.getMessages(threadId, threadId);
+      boundaries = db.getBoundaries(threadId, threadId);
+    }
+
+    // Initialize in-memory storage
+    ensureChannelInitialized(threadId);
+    messagesByChannel.set(threadId, messages);
+    messageIdsByChannel.set(threadId, new Set(messages.map(m => m.id)));
+    blockBoundaries.set(threadId, boundaries);
+
+    console.log(`[LazyLoad] Loaded ${messages.length} messages and ${boundaries.length} boundaries from DB`);
+
+    // Backfill any messages missed during downtime from Discord
+    const backfilled = await backfillThreadFromDiscord(threadId, client);
+    if (backfilled > 0) {
+      console.log(`[LazyLoad] Backfilled ${backfilled} messages from Discord`);
+    }
+
+    // Freeze blocks if enough unfrozen messages accumulated
+    freezeBlocksFromHistory(threadId);
+
+  } catch (err) {
+    console.error(`[LazyLoad] Failed to load thread ${threadId}:`, err);
+    // Ensure initialized even on error
+    ensureChannelInitialized(threadId);
+  }
+}
+
+/**
+ * Backfill messages from Discord that were sent during downtime.
+ * Returns number of messages backfilled.
+ */
+async function backfillThreadFromDiscord(
+  threadId: string,
+  client: Client,
+): Promise<number> {
+  try {
+    // Get the last message we have in memory
+    const messages = messagesByChannel.get(threadId) ?? [];
+    if (messages.length === 0) {
+      // No messages in DB - need to fetch full history
+      console.log(`[Backfill] Thread ${threadId} has no messages, fetching full history from Discord`);
+      const channel = await client.channels.fetch(threadId);
+      if (!channel || !channel.isTextBased()) {
+        return 0;
+      }
+
+      const fetchedMessages = await fetchChannelHistory(channel, globalConfig.maxContextTokens);
+
+      // Store all fetched messages
+      for (const msg of fetchedMessages) {
+        appendStoredMessage(msg);
+      }
+
+      return fetchedMessages.length;
+    }
+
+    // Get the latest message ID from our store
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage) return 0;
+
+    const lastDiscordId = lastMessage.id;
+
+    // Fetch messages after this ID from Discord
+    const channel = await client.channels.fetch(threadId);
+    if (!channel || !channel.isTextBased()) {
+      return 0;
+    }
+
+    const newMessages: StoredMessage[] = [];
+    let afterCursor: string = lastDiscordId;
+
+    // Fetch forward from last known message
+    while (true) {
+      const fetched = await channel.messages.fetch({
+        limit: 100,
+        after: afterCursor,
+      });
+
+      if (fetched.size === 0) break;
+
+      // Sort oldest to newest
+      const sorted = [...fetched.values()].sort((a, b) =>
+        BigInt(a.id) < BigInt(b.id) ? -1 : 1,
+      );
+
+      for (const msg of sorted) {
+        const stored = messageToStored(msg);
+        newMessages.push(stored);
+        afterCursor = msg.id;
+      }
+
+      if (fetched.size < 100) break; // No more messages
+    }
+
+    // Store all new messages
+    for (const msg of newMessages) {
+      appendStoredMessage(msg);
+    }
+
+    return newMessages.length;
+
+  } catch (err) {
+    console.error(`[Backfill] Failed to backfill thread ${threadId}:`, err);
+    return 0;
+  }
+}
+
 async function fetchChannelHistory(
   channel: Message['channel'] & { isTextBased(): boolean },
   maxTokens: number,
@@ -723,19 +889,31 @@ export function clearChannel(channelId: string): void {
 
 /**
  * Clear a thread's history (both in-memory and database).
- * Note: In current in-memory system, threads are treated as separate channels,
- * so this is effectively an alias for clearChannel(threadId).
+ * Records reset metadata to prevent reloading pre-reset messages after downtime.
  */
 export function clearThread(threadId: string, parentChannelId: string): void {
   // Clear in-memory (currently stored by thread's channelId)
   messagesByChannel.delete(threadId);
   messageIdsByChannel.delete(threadId);
   blockBoundaries.delete(threadId);
+  hydratedChannels.delete(threadId); // Clear hydration flag
 
-  // Clear from database if enabled
+  // Clear from database and record reset if enabled
   if (globalConfig.useDatabaseStorage) {
     try {
-      db.clearThread(parentChannelId, threadId);
+      // Get the last row_id BEFORE clearing (for reset tracking)
+      const lastRowId = db.getLastRowId(threadId, threadId);
+
+      // Record reset metadata BEFORE clearing (so foreign key exists)
+      if (lastRowId !== null) {
+        db.recordThreadReset(threadId, lastRowId);
+        console.log(`[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}`);
+      }
+
+      // Now clear messages and boundaries
+      // FIX: Use threadId for channelId parameter (not parentChannelId)
+      // For threads, channel_id in DB equals the thread's own ID
+      db.clearThread(threadId, threadId);
     } catch (err) {
       console.error('[Database] Failed to clear thread:', err);
     }
