@@ -253,18 +253,18 @@ class GeminiProvider {
         this.client = new generative_ai_1.GoogleGenerativeAI(apiKey);
     }
     async send(params) {
-        const { conversationData, botDisplayName, otherSpeakers } = params;
+        const { conversationData, botDisplayName, imageBlocks, otherSpeakers } = params;
         const { cachedBlocks, tail } = conversationData;
         const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
         const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
         // Build the prompt - include system prompt if present
-        let fullPrompt = '';
+        let preamble = '';
         const trimmedSystemPrompt = this.systemPrompt.trim();
         if (trimmedSystemPrompt) {
-            fullPrompt += `System: ${trimmedSystemPrompt}\n\n`;
+            preamble += `System: ${trimmedSystemPrompt}\n\n`;
         }
-        fullPrompt += `Here is the conversation so far:\n\n${transcriptText}\n\n`;
-        fullPrompt += `You are ${botDisplayName}. Please respond to the conversation above.`;
+        preamble += `Here is the conversation so far:\n\n`;
+        const postamble = `\n\nYou are ${botDisplayName}. Please respond to the conversation above.`;
         // Configure response modalities based on output mode
         const responseModalities = this.outputMode === 'image' ? ['Image'] : this.outputMode === 'text' ? ['Text'] : ['Text', 'Image'];
         const generativeModel = this.client.getGenerativeModel({
@@ -273,7 +273,66 @@ class GeminiProvider {
                 responseModalities,
             }, // Type definition may not include responseModalities yet
         });
-        const result = await generativeModel.generateContent(fullPrompt);
+        // Build interleaved content parts with images inline
+        const contentParts = [];
+        // Add preamble
+        contentParts.push({ text: preamble });
+        // Split transcript on image markers, keeping the markers
+        const imagePattern = /(!\[image\]\([^\)]+\))/g;
+        const segments = transcriptText.split(imagePattern);
+        for (const segment of segments) {
+            const imageMatch = segment.match(/^!\[image\]\(([^\)]+)\)$/);
+            if (imageMatch) {
+                // This is an image marker - fetch and insert actual image
+                const url = imageMatch[1];
+                try {
+                    const response = await fetch(url);
+                    if (response.ok) {
+                        const buffer = await response.arrayBuffer();
+                        const base64 = Buffer.from(buffer).toString('base64');
+                        const mimeType = response.headers.get('content-type') || 'image/png';
+                        contentParts.push({
+                            inlineData: {
+                                mimeType,
+                                data: base64,
+                            },
+                        });
+                    }
+                    else {
+                        // Failed to fetch, keep as text marker
+                        contentParts.push({ text: segment });
+                    }
+                }
+                catch (err) {
+                    console.warn(`[GeminiProvider] Failed to fetch image ${url}:`, err);
+                    // Keep as text marker on error
+                    contentParts.push({ text: segment });
+                }
+            }
+            else if (segment) {
+                // Regular text segment
+                contentParts.push({ text: segment });
+            }
+        }
+        // Add postamble
+        contentParts.push({ text: postamble });
+        // Add images from the current message attachments (if any)
+        for (const imageBlock of imageBlocks) {
+            // imageBlock.source.url is a data URL like "data:image/png;base64,..."
+            const url = imageBlock.source.url;
+            const match = url.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+                const mimeType = match[1];
+                const base64Data = match[2];
+                contentParts.push({
+                    inlineData: {
+                        mimeType,
+                        data: base64Data,
+                    },
+                });
+            }
+        }
+        const result = await generativeModel.generateContent(contentParts);
         const response = result.response;
         // Extract text and image from response parts
         let textContent = '';

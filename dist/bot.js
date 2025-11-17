@@ -231,12 +231,22 @@ function setupBotEvents(instance) {
                 }
                 // Append bot's own replies to the message store
                 for (const sentMsg of sentMessages) {
+                    let content = sentMsg.content || '(empty message)';
+                    // Append image URLs from attachments for vision context
+                    if (sentMsg.attachments.size > 0) {
+                        const imageUrls = [...sentMsg.attachments.values()]
+                            .filter((a) => a.contentType?.startsWith('image/'))
+                            .map((a) => `\n![image](${a.url})`);
+                        if (imageUrls.length > 0) {
+                            content += imageUrls.join('');
+                        }
+                    }
                     const stored = {
                         id: sentMsg.id,
                         channelId: sentMsg.channel.id,
                         authorId: sentMsg.author.id,
                         authorName: botDisplayName, // Use canonical name for consistency
-                        content: sentMsg.content || '(empty message)',
+                        content,
                         timestamp: sentMsg.createdTimestamp,
                     };
                     (0, message_store_1.appendStoredMessage)(stored);

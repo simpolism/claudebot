@@ -70,12 +70,22 @@ function estimateMessageTokens(authorName, content) {
     return estimateTokens(`${authorName}: ${content}`) + 4; // +4 for message overhead
 }
 function messageToStored(message) {
+    let content = message.content || '(empty message)';
+    // Append image URLs from attachments for vision context
+    if (message.attachments.size > 0) {
+        const imageUrls = [...message.attachments.values()]
+            .filter((a) => a.contentType?.startsWith('image/'))
+            .map((a) => `\n![image](${a.url})`);
+        if (imageUrls.length > 0) {
+            content += imageUrls.join('');
+        }
+    }
     return {
         id: message.id,
         channelId: message.channel.id,
         authorId: message.author.id,
         authorName: message.author.username ?? message.author.globalName ?? message.author.tag,
-        content: message.content || '(empty message)',
+        content,
         timestamp: message.createdTimestamp,
     };
 }
