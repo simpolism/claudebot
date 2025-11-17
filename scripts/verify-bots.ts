@@ -120,12 +120,18 @@ async function verifyOpenAIAPI(
   }
 }
 
-async function verifyGeminiAPI(apiKey: string): Promise<{ success: boolean; error?: string; duration: number }> {
+async function verifyGeminiAPI(
+  apiKey: string,
+  model: string,
+): Promise<{ success: boolean; error?: string; duration: number }> {
   const start = Date.now();
   try {
     const genai = new GoogleGenAI({ apiKey });
-    // List models to verify API key works (cheaper than generating)
-    await genai.models.list();
+    // Use a minimal generation to verify API key works
+    await genai.models.generateContent({
+      model: model,
+      contents: 'hi',
+    });
     return { success: true, duration: Date.now() - start };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -152,7 +158,7 @@ async function verifyAPI(config: BotConfig): Promise<{ success: boolean; error?:
       if (!config.geminiApiKey) {
         return { success: false, error: 'No Gemini API key configured', duration: 0 };
       }
-      return verifyGeminiAPI(config.geminiApiKey);
+      return verifyGeminiAPI(config.geminiApiKey, config.model);
 
     default:
       return { success: false, error: `Unknown provider: ${config.provider}`, duration: 0 };
