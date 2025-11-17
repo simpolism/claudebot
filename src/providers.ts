@@ -357,7 +357,7 @@ class GeminiProvider implements AIProvider {
     const segments = transcriptText.split(imagePattern);
 
     // Find all image markers and only fetch the last N
-    const MAX_HISTORICAL_IMAGES = 0;
+    const MAX_HISTORICAL_IMAGES = 1;
     const imageMarkerIndices: number[] = [];
     for (let i = 0; i < segments.length; i++) {
       if (segments[i].match(/^!\[image\]\([^\)]+\)$/)) {
