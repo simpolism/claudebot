@@ -156,6 +156,30 @@ function setupBotEvents(instance) {
             }
             // Note: counter is incremented when bot RESPONDS to another bot, not on every bot message
         }
+        // Handle /reset command (thread-only)
+        const content = message.content.trim();
+        if (content === '/reset' || content.startsWith('/reset ')) {
+            if (!message.channel.isThread()) {
+                await message.reply('❌ The `/reset` command only works in threads. Use threads to isolate conversations.');
+                return;
+            }
+            const threadId = message.channel.id;
+            const parentChannelId = message.channel.parentId;
+            if (!parentChannelId) {
+                await message.reply('❌ Could not determine parent channel for this thread.');
+                return;
+            }
+            try {
+                (0, message_store_1.clearThread)(threadId, parentChannelId);
+                await message.reply('✅ Thread history cleared. Starting fresh conversation! 🔄');
+                console.log(`[${config.name}] Cleared thread history for ${threadId}`);
+            }
+            catch (err) {
+                console.error(`[${config.name}] Failed to clear thread:`, err);
+                await message.reply('❌ Failed to clear thread history. Please try again.');
+            }
+            return;
+        }
         if (!shouldRespond(message, client))
             return;
         const channelId = message.channel.id;

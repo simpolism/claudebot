@@ -42,6 +42,7 @@ exports.loadBoundariesFromDisk = loadBoundariesFromDisk;
 exports.saveBoundariesToDisk = saveBoundariesToDisk;
 exports.loadHistoryFromDiscord = loadHistoryFromDiscord;
 exports.clearChannel = clearChannel;
+exports.clearThread = clearThread;
 exports.clearAll = clearAll;
 exports.getStats = getStats;
 exports.getChannelSpeakers = getChannelSpeakers;
@@ -556,6 +557,35 @@ function clearChannel(channelId) {
     messagesByChannel.delete(channelId);
     messageIdsByChannel.delete(channelId);
     blockBoundaries.delete(channelId);
+    // Also clear from database if enabled
+    if (config_1.globalConfig.useDatabaseStorage) {
+        try {
+            db.clearChannel(channelId);
+        }
+        catch (err) {
+            console.error('[Database] Failed to clear channel:', err);
+        }
+    }
+}
+/**
+ * Clear a thread's history (both in-memory and database).
+ * Note: In current in-memory system, threads are treated as separate channels,
+ * so this is effectively an alias for clearChannel(threadId).
+ */
+function clearThread(threadId, parentChannelId) {
+    // Clear in-memory (currently stored by thread's channelId)
+    messagesByChannel.delete(threadId);
+    messageIdsByChannel.delete(threadId);
+    blockBoundaries.delete(threadId);
+    // Clear from database if enabled
+    if (config_1.globalConfig.useDatabaseStorage) {
+        try {
+            db.clearThread(parentChannelId, threadId);
+        }
+        catch (err) {
+            console.error('[Database] Failed to clear thread:', err);
+        }
+    }
 }
 function clearAll() {
     messagesByChannel.clear();

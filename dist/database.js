@@ -67,6 +67,8 @@ exports.deleteOldestBlockBoundaries = deleteOldestBlockBoundaries;
 exports.getDatabaseStats = getDatabaseStats;
 exports.vacuumDatabase = vacuumDatabase;
 exports.clearAllData = clearAllData;
+exports.clearThread = clearThread;
+exports.clearChannel = clearChannel;
 const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -444,4 +446,28 @@ function clearAllData() {
         db.exec('DELETE FROM block_boundaries');
     })();
     console.log('[Database] All data cleared');
+}
+/**
+ * Clear all messages and boundaries for a specific thread.
+ * Used for /reset command in threads.
+ */
+function clearThread(channelId, threadId) {
+    const db = getDb();
+    db.transaction(() => {
+        db.prepare('DELETE FROM messages WHERE channel_id = ? AND thread_id = ?').run(channelId, threadId);
+        db.prepare('DELETE FROM block_boundaries WHERE channel_id = ? AND thread_id = ?').run(channelId, threadId);
+    })();
+    console.log(`[Database] Cleared thread ${threadId} in channel ${channelId}`);
+}
+/**
+ * Clear all messages and boundaries for a specific channel (not thread).
+ * DANGEROUS: This clears the entire channel history.
+ */
+function clearChannel(channelId) {
+    const db = getDb();
+    db.transaction(() => {
+        db.prepare('DELETE FROM messages WHERE channel_id = ? AND thread_id IS NULL').run(channelId);
+        db.prepare('DELETE FROM block_boundaries WHERE channel_id = ? AND thread_id IS NULL').run(channelId);
+    })();
+    console.log(`[Database] Cleared channel ${channelId}`);
 }

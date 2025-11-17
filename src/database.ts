@@ -567,3 +567,33 @@ export function clearAllData(): void {
 
   console.log('[Database] All data cleared');
 }
+
+/**
+ * Clear all messages and boundaries for a specific thread.
+ * Used for /reset command in threads.
+ */
+export function clearThread(channelId: string, threadId: string): void {
+  const db = getDb();
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM messages WHERE channel_id = ? AND thread_id = ?').run(channelId, threadId);
+    db.prepare('DELETE FROM block_boundaries WHERE channel_id = ? AND thread_id = ?').run(channelId, threadId);
+  })();
+
+  console.log(`[Database] Cleared thread ${threadId} in channel ${channelId}`);
+}
+
+/**
+ * Clear all messages and boundaries for a specific channel (not thread).
+ * DANGEROUS: This clears the entire channel history.
+ */
+export function clearChannel(channelId: string): void {
+  const db = getDb();
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM messages WHERE channel_id = ? AND thread_id IS NULL').run(channelId);
+    db.prepare('DELETE FROM block_boundaries WHERE channel_id = ? AND thread_id IS NULL').run(channelId);
+  })();
+
+  console.log(`[Database] Cleared channel ${channelId}`);
+}

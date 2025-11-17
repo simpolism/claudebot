@@ -685,6 +685,36 @@ export function clearChannel(channelId: string): void {
   messagesByChannel.delete(channelId);
   messageIdsByChannel.delete(channelId);
   blockBoundaries.delete(channelId);
+
+  // Also clear from database if enabled
+  if (globalConfig.useDatabaseStorage) {
+    try {
+      db.clearChannel(channelId);
+    } catch (err) {
+      console.error('[Database] Failed to clear channel:', err);
+    }
+  }
+}
+
+/**
+ * Clear a thread's history (both in-memory and database).
+ * Note: In current in-memory system, threads are treated as separate channels,
+ * so this is effectively an alias for clearChannel(threadId).
+ */
+export function clearThread(threadId: string, parentChannelId: string): void {
+  // Clear in-memory (currently stored by thread's channelId)
+  messagesByChannel.delete(threadId);
+  messageIdsByChannel.delete(threadId);
+  blockBoundaries.delete(threadId);
+
+  // Clear from database if enabled
+  if (globalConfig.useDatabaseStorage) {
+    try {
+      db.clearThread(parentChannelId, threadId);
+    } catch (err) {
+      console.error('[Database] Failed to clear thread:', err);
+    }
+  }
 }
 
 export function clearAll(): void {
