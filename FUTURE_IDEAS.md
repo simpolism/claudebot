@@ -5,7 +5,6 @@ Ideas for enhancing the bot framework while respecting IMP (Immanent Mind Plural
 ## First Steps
 
 - Threading + history mgmt (maybe need actual database again).
-- Split config out into something modifiable at runtime, or something not checked-into repo.
 
 ## Non-Verbal Presence
 

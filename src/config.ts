@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface BotConfig {
   name: string;
@@ -25,6 +27,24 @@ export interface BotConfig {
   cliSimMode?: boolean;
 }
 
+// JSON file format (env var names instead of actual values)
+interface BotConfigJSON {
+  name: string;
+  discordTokenEnv: string;
+  provider: 'anthropic' | 'openai' | 'gemini';
+  model: string;
+  supportsImageBlocks?: boolean;
+  openaiBaseUrl?: string;
+  openaiApiKeyEnv?: string;
+  geminiApiKeyEnv?: string;
+  geminiOutputMode?: 'text' | 'image' | 'both';
+  maxContextTokens?: number;
+  maxTokens?: number;
+  temperature?: number;
+  systemPrompt?: string;
+  cliSimMode?: boolean;
+}
+
 // Global configuration shared across all bots
 function parseMainChannelIds(): string[] {
   const raw = process.env.MAIN_CHANNEL_IDS || '';
@@ -45,40 +65,42 @@ export const globalConfig = {
   discordMessageLimit: 2000,
 };
 
-// Bot configurations - add your bots here
-export const botConfigs: BotConfig[] = [
-  {
-    name: 'Haiku4.5',
-    discordToken: process.env.HAIKU_DISCORD_TOKEN || '',
-    provider: 'anthropic',
-    model: 'claude-haiku-4-5',
-  },
-  {
-    name: 'CL-KU',
-    discordToken: process.env.CLKU_DISCORD_TOKEN || '',
-    provider: 'anthropic',
-    model: 'claude-3-5-haiku-latest',
-  },
-  {
-    name: 'K2',
-    discordToken: process.env.KIMI_DISCORD_TOKEN || '',
-    provider: 'openai',
-    model: 'moonshotai/kimi-k2-instruct-0905',
-    openaiBaseUrl: 'https://api.groq.com/openai/v1',
-    openaiApiKey: process.env.GROQ_API_KEY || '',
-  },
-  {
-    name: 'gemflash',
-    discordToken: process.env.NANOBANANA_DISCORD_TOKEN || '',
-    provider: 'gemini',
-    model: 'gemini-2.5-flash-image',
-    geminiApiKey: process.env.GOOGLE_API_KEY || '',
-    geminiOutputMode: 'both',
-    maxContextTokens: 30000,
-    systemPrompt:
-      'You are an image-generating AI assistant. When users request images, drawings, or visual content, you MUST generate an actual image - do not just describe it. Always include a generated image when the context calls for visual output.',
-  },
-];
+// Load bot configurations from JSON file
+function loadBotConfigsFromJSON(): BotConfig[] {
+  const configPath = path.join(process.cwd(), 'bots.json');
+
+  if (!fs.existsSync(configPath)) {
+    console.warn(`No bots.json found at ${configPath}, using empty config`);
+    return [];
+  }
+
+  try {
+    const jsonContent = fs.readFileSync(configPath, 'utf-8');
+    const jsonConfigs: BotConfigJSON[] = JSON.parse(jsonContent);
+
+    return jsonConfigs.map((jsonConfig) => ({
+      name: jsonConfig.name,
+      discordToken: process.env[jsonConfig.discordTokenEnv] || '',
+      provider: jsonConfig.provider,
+      model: jsonConfig.model,
+      supportsImageBlocks: jsonConfig.supportsImageBlocks,
+      openaiBaseUrl: jsonConfig.openaiBaseUrl,
+      openaiApiKey: jsonConfig.openaiApiKeyEnv ? process.env[jsonConfig.openaiApiKeyEnv] || '' : undefined,
+      geminiApiKey: jsonConfig.geminiApiKeyEnv ? process.env[jsonConfig.geminiApiKeyEnv] || '' : undefined,
+      geminiOutputMode: jsonConfig.geminiOutputMode,
+      maxContextTokens: jsonConfig.maxContextTokens,
+      maxTokens: jsonConfig.maxTokens,
+      temperature: jsonConfig.temperature,
+      systemPrompt: jsonConfig.systemPrompt,
+      cliSimMode: jsonConfig.cliSimMode,
+    }));
+  } catch (err) {
+    console.error(`Failed to load bots.json:`, err);
+    return [];
+  }
+}
+
+export const botConfigs: BotConfig[] = loadBotConfigsFromJSON();
 
 // Filter out bots without tokens (allows partial configuration)
 export const activeBotConfigs = botConfigs.filter((config) => {

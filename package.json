@@ -8,7 +8,8 @@
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
     "format": "prettier --write \"{src,tests}/**/*.ts\"",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
+    "verify-bots": "ts-node scripts/verify-bots.ts"
   },
   "keywords": [],
   "author": "",

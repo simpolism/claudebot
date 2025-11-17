@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Haiku4.5",
+    "discordTokenEnv": "HAIKU_DISCORD_TOKEN",
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5"
+  },
+  {
+    "name": "CL-KU",
+    "discordTokenEnv": "CLKU_DISCORD_TOKEN",
+    "provider": "anthropic",
+    "model": "claude-3-5-haiku-latest"
+  },
+  {
+    "name": "K2",
+    "discordTokenEnv": "KIMI_DISCORD_TOKEN",
+    "provider": "openai",
+    "model": "moonshotai/kimi-k2-instruct-0905",
+    "openaiBaseUrl": "https://api.groq.com/openai/v1",
+    "openaiApiKeyEnv": "GROQ_API_KEY"
+  },
+  {
+    "name": "gemflash",
+    "discordTokenEnv": "NANOBANANA_DISCORD_TOKEN",
+    "provider": "gemini",
+    "model": "gemini-2.5-flash-image",
+    "geminiApiKeyEnv": "GOOGLE_API_KEY",
+    "geminiOutputMode": "both",
+    "maxContextTokens": 30000,
+    "systemPrompt": "You are an image-generating AI assistant. When users request images, drawings, or visual content, you MUST generate an actual image - do not just describe it. Always include a generated image when the context calls for visual output."
+  }
+]
