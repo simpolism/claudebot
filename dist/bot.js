@@ -9,6 +9,7 @@ const message_store_1 = require("./message-store");
 const context_1 = require("./context");
 const discord_utils_1 = require("./discord-utils");
 const debug_server_1 = require("./debug-server");
+const database_1 = require("./database");
 // Export bot instances for debug server access
 exports.botInstances = [];
 // ---------- Bot-to-Bot Exchange Tracking ----------
@@ -317,6 +318,13 @@ function setupBotEvents(instance) {
 async function main() {
     // Start debug server for inspecting in-memory state
     (0, debug_server_1.startDebugServer)();
+    // Initialize database if feature flag is enabled
+    if (config_1.globalConfig.useDatabaseStorage) {
+        console.log('[Database] Initializing SQLite storage (USE_DATABASE_STORAGE=true)');
+        (0, database_1.initializeDatabase)();
+        const stats = (0, database_1.getDatabaseStats)();
+        console.log('[Database] Current state:', stats);
+    }
     // Load block boundaries from disk (for Anthropic cache consistency)
     (0, message_store_1.loadBoundariesFromDisk)();
     console.log('Starting multi-bot system with configuration:', {
@@ -372,4 +380,19 @@ async function main() {
 main().catch((err) => {
     console.error('Fatal error:', err);
     process.exit(1);
+});
+// Graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\nReceived SIGINT, shutting down gracefully...');
+    if (config_1.globalConfig.useDatabaseStorage) {
+        (0, database_1.closeDatabase)();
+    }
+    process.exit(0);
+});
+process.on('SIGTERM', () => {
+    console.log('\nReceived SIGTERM, shutting down gracefully...');
+    if (config_1.globalConfig.useDatabaseStorage) {
+        (0, database_1.closeDatabase)();
+    }
+    process.exit(0);
 });

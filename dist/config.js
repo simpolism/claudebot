@@ -55,6 +55,7 @@ exports.globalConfig = {
     temperature: parseFloat(process.env.TEMPERATURE || '1'),
     approxCharsPerToken: parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4'),
     discordMessageLimit: 2000,
+    useDatabaseStorage: process.env.USE_DATABASE_STORAGE === 'true', // Feature flag for SQLite storage
 };
 // Load bot configurations from JSON file
 function loadBotConfigsFromJSON() {
