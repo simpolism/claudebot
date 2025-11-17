@@ -3,7 +3,7 @@ process.env.KIMI_DISCORD_TOKEN ||= 'test-token';
 process.env.GROQ_API_KEY ||= 'test-key';
 process.env.MAIN_CHANNEL_IDS ||= '';
 
-import { describe, expect, it, vi, afterAll, beforeAll } from 'vitest';
+import { describe, expect, it, vi, afterAll, afterEach, beforeAll } from 'vitest';
 import { ChannelType, type Client, type Message } from 'discord.js';
 
 type TestFetchedMessage = {
@@ -77,6 +77,10 @@ function getContextModule(): ContextModule {
   }
   return contextModule;
 }
+
+afterEach(() => {
+  getContextModule().clearTailCache();
+});
 
 describe('buildConversationContext', () => {
   it('fetches a guaranteed tail even when cached blocks fill the budget', async () => {
@@ -256,6 +260,6 @@ describe('buildConversationContext', () => {
     expect(
       secondConversation.cachedBlocks.find((block) => block === existingBlockText),
     ).toBe(existingBlockText);
-    expect(secondConversation.tail).toHaveLength(1);
+    expect(secondConversation.tail).toHaveLength(2);
   });
 });

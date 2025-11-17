@@ -14,6 +14,20 @@ import { ConversationData, ImageBlock, SimpleMessage } from './types';
 export const GUARANTEED_TAIL_TOKENS = 8000;
 const USER_MENTION_REGEX = /<@!?(\d+)>/g;
 
+type TailMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  tokens: number;
+};
+
+type TailCacheEntry = {
+  messages: TailMessage[];
+  lastFetchedId: string | null;
+};
+
+const tailCache = new Map<string, TailCacheEntry>();
+
 export type TextThreadChannel = PublicThreadChannel | PrivateThreadChannel;
 
 type CacheAccess = {
@@ -96,6 +110,8 @@ export async function buildConversationContext(params: {
   // Get existing cached blocks
   const existingCachedBlocks = cacheAccess.getCachedBlocks(channelId);
   const lastCachedMessageId = cacheAccess.getLastCachedMessageId(channelId);
+  const existingTailState = tailCache.get(channelId);
+  const effectiveAfterId = existingTailState?.lastFetchedId ?? lastCachedMessageId;
 
   // Calculate token budget used by cached blocks
   const cachedTokens = existingCachedBlocks.reduce(
@@ -110,14 +126,14 @@ export async function buildConversationContext(params: {
 
   console.log(
     `[${botDisplayName}] Fetching Discord history for ${channelId} after ${
-      lastCachedMessageId ?? 'beginning'
+      effectiveAfterId ?? 'beginning'
     } with budget ${fetchBudget} tokens`,
   );
 
   // Fetch new messages after the last cached one
   const newMessages = await fetchMessages(
     channel,
-    lastCachedMessageId,
+    effectiveAfterId,
     fetchBudget,
     client,
   );
@@ -129,27 +145,60 @@ export async function buildConversationContext(params: {
   const finalCachedBlocks = cacheAccess.getCachedBlocks(channelId);
   const finalLastCachedId = cacheAccess.getLastCachedMessageId(channelId);
 
-  // Build the tail (messages after the last cached block)
-  const tail: SimpleMessage[] = [];
+  const filteredExisting =
+    existingTailState?.messages.filter((msg) => {
+      if (!finalLastCachedId) return true;
+      return BigInt(msg.id) > BigInt(finalLastCachedId);
+    }) ?? [];
+
+  const freshTailEntries: TailMessage[] = [];
   for (const msg of newMessages) {
     if (finalLastCachedId && BigInt(msg.id) <= BigInt(finalLastCachedId)) {
       continue;
     }
-    tail.push({
+    freshTailEntries.push({
+      id: msg.id,
       role: msg.role,
       content: msg.formattedText,
+      tokens: msg.tokens,
     });
   }
+
+  const combinedTail = [...filteredExisting, ...freshTailEntries];
+  const channelCachedTokens = finalCachedBlocks.reduce(
+    (sum, block) => sum + block.tokenCount,
+    0,
+  );
+  const maxTailTokens = Math.max(threadBudget - channelCachedTokens, GUARANTEED_TAIL_TOKENS);
+  let combinedTokenCount = combinedTail.reduce((sum, msg) => sum + msg.tokens, 0);
+  while (combinedTokenCount > maxTailTokens && combinedTail.length > 0) {
+    const removed = combinedTail.shift();
+    if (removed) {
+      combinedTokenCount -= removed.tokens;
+    }
+  }
+
+  const lastFetchedId =
+    combinedTail.length > 0
+      ? combinedTail[combinedTail.length - 1].id
+      : existingTailState?.lastFetchedId ?? finalLastCachedId ?? null;
+  tailCache.set(channelId, {
+    messages: combinedTail,
+    lastFetchedId,
+  });
+
+  const tail: SimpleMessage[] = combinedTail.map((msg) => ({
+    role: msg.role,
+    content: msg.content,
+  }));
 
   const allCachedBlocks = [
     ...parentCachedBlocks,
     ...finalCachedBlocks.map((block) => block.text),
   ];
 
-  const totalCachedTokens =
-    parentContextTokens +
-    finalCachedBlocks.reduce((sum, block) => sum + block.tokenCount, 0);
-  const tailTokens = tail.reduce((sum, msg) => sum + estimateTokens(msg.content) + 4, 0);
+  const totalCachedTokens = parentContextTokens + channelCachedTokens;
+  const tailTokens = combinedTokenCount;
 
   const contextType = parentCachedBlocks.length > 0 ? 'Thread' : 'Channel';
   console.log(
@@ -329,4 +378,12 @@ function buildAttachmentSummary(attachments: Message['attachments']): string | n
   });
 
   return lines.length ? lines.join('\n') : null;
+}
+
+export function clearTailCache(channelId?: string): void {
+  if (channelId) {
+    tailCache.delete(channelId);
+    return;
+  }
+  tailCache.clear();
 }
