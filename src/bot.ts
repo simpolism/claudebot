@@ -189,14 +189,12 @@ function setupBotEvents(instance: BotInstance): void {
       if (isInScope(message)) {
         appendMessage(message);
 
-        // Track bot-to-bot exchanges
+        // Track bot-to-bot exchanges: reset counter on human messages
         const channelId = message.channel.id;
-        if (message.author.bot) {
-          const current = consecutiveBotMessages.get(channelId) || 0;
-          consecutiveBotMessages.set(channelId, current + 1);
-        } else {
+        if (!message.author.bot) {
           consecutiveBotMessages.set(channelId, 0);
         }
+        // Note: counter is incremented when bot RESPONDS to another bot, not on every bot message
       }
 
       if (!shouldRespond(message, client)) return;
@@ -367,6 +365,15 @@ function setupBotEvents(instance: BotInstance): void {
             timestamp: sentMsg.createdTimestamp,
           };
           appendStoredMessage(stored);
+        }
+
+        // Track bot-to-bot exchange: increment counter if we responded to another bot
+        if (message.author.bot) {
+          const current = consecutiveBotMessages.get(channelId) || 0;
+          consecutiveBotMessages.set(channelId, current + 1);
+          console.log(
+            `[${config.name}] Bot-to-bot exchange count: ${current + 1}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`,
+          );
         }
 
         const totalDuration = Date.now() - receiveTime;
