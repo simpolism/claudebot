@@ -19,8 +19,8 @@ const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
 const processingChannels = new Set();
 // Queue for pending messages when channel is busy
 const messageQueues = new Map();
-// Track reset messages that have been replied to (to prevent duplicate replies)
-const repliedResetMessages = new Set();
+// Track reset messages that have been reacted to (to prevent duplicate reactions)
+const reactedResetMessages = new Set();
 const allowedRootChannels = new Set(config_1.globalConfig.mainChannelIds);
 function isChannelAllowed(channelId) {
     if (allowedRootChannels.size === 0) {
@@ -179,20 +179,20 @@ function setupBotEvents(instance) {
                 return;
             }
             if (!message.channel.isThread()) {
-                // Only first bot replies
-                if (!repliedResetMessages.has(message.id)) {
-                    repliedResetMessages.add(message.id);
-                    await message.reply('❌ The `/reset` command only works in threads. Use threads to isolate conversations.');
+                // Only first bot reacts
+                if (!reactedResetMessages.has(message.id)) {
+                    reactedResetMessages.add(message.id);
+                    await message.react('⚠️');
                 }
                 return;
             }
             const threadId = message.channel.id;
             const parentChannelId = message.channel.parentId;
             if (!parentChannelId) {
-                // Only first bot replies
-                if (!repliedResetMessages.has(message.id)) {
-                    repliedResetMessages.add(message.id);
-                    await message.reply('❌ Could not determine parent channel for this thread.');
+                // Only first bot reacts
+                if (!reactedResetMessages.has(message.id)) {
+                    reactedResetMessages.add(message.id);
+                    await message.react('⚠️');
                 }
                 return;
             }
@@ -205,15 +205,10 @@ function setupBotEvents(instance) {
                     // Determine botId: null for global reset, client.user.id for per-bot reset
                     const botId = isGlobalReset ? null : client.user?.id;
                     (0, message_store_1.clearThread)(threadId, parentChannelId, message.id, botId);
-                    // Only first bot to process (for global) or first mentioned bot sends confirmation
-                    if (!repliedResetMessages.has(message.id)) {
-                        repliedResetMessages.add(message.id);
-                        const resetScope = isGlobalReset
-                            ? 'all bots'
-                            : botMentions.size === 1
-                                ? 'this bot'
-                                : 'mentioned bots';
-                        await message.reply(`✅ Thread history cleared for ${resetScope}. Starting fresh conversation! 🔄`);
+                    // Only first bot to process (for global) or first mentioned bot reacts with success
+                    if (!reactedResetMessages.has(message.id)) {
+                        reactedResetMessages.add(message.id);
+                        await message.react('✅');
                     }
                     const resetType = isGlobalReset ? 'global' : 'per-bot';
                     console.log(`[${config.name}] Cleared thread history for ${threadId} (${resetType})`);
@@ -221,10 +216,10 @@ function setupBotEvents(instance) {
             }
             catch (err) {
                 console.error(`[${config.name}] Failed to clear thread:`, err);
-                // Only first bot replies with error
-                if (!repliedResetMessages.has(message.id)) {
-                    repliedResetMessages.add(message.id);
-                    await message.reply('❌ Failed to clear thread history. Please try again.');
+                // Only first bot reacts with error
+                if (!reactedResetMessages.has(message.id)) {
+                    reactedResetMessages.add(message.id);
+                    await message.react('⚠️');
                 }
             }
             return;
@@ -375,7 +370,7 @@ function setupBotEvents(instance) {
             catch (err) {
                 console.error(`[${config.name}] Error handling message ${msg.id}:`, err);
                 try {
-                    await msg.reply('Sorry, I hit an error. Check the bot logs.');
+                    await msg.react('⚠️');
                 }
                 catch {
                     // ignore
