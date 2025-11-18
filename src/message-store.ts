@@ -81,7 +81,9 @@ function messageToStored(message: Message): StoredMessage {
   // Detect if this is a thread message
   const isThread = message.channel.isThread();
   const threadId = isThread ? message.channel.id : null;
-  const parentChannelId = isThread ? (message.channel.parentId ?? message.channel.id) : message.channel.id;
+  const parentChannelId = isThread
+    ? (message.channel.parentId ?? message.channel.id)
+    : message.channel.id;
 
   return {
     id: message.id,
@@ -89,7 +91,8 @@ function messageToStored(message: Message): StoredMessage {
     threadId,
     parentChannelId,
     authorId: message.author.id,
-    authorName: message.author.username ?? message.author.globalName ?? message.author.tag,
+    authorName:
+      message.author.username ?? message.author.globalName ?? message.author.tag,
     content,
     timestamp: message.createdTimestamp,
   };
@@ -186,14 +189,22 @@ export function getContext(
     // For threads: Get parent channel messages to build parent blocks
     const parentMessages = messagesByChannel.get(parentChannelId) ?? [];
     for (const boundary of currentBoundaries) {
-      const blockMessages = getMessagesInRange(parentMessages, boundary.firstMessageId, boundary.lastMessageId);
+      const blockMessages = getMessagesInRange(
+        parentMessages,
+        boundary.firstMessageId,
+        boundary.lastMessageId,
+      );
       const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
       blockData.push({ text: blockText, tokens: boundary.tokenCount });
     }
   } else {
     // For regular channels: Use channel's own blocks
     for (const boundary of currentBoundaries) {
-      const blockMessages = getMessagesInRange(currentMessages, boundary.firstMessageId, boundary.lastMessageId);
+      const blockMessages = getMessagesInRange(
+        currentMessages,
+        boundary.firstMessageId,
+        boundary.lastMessageId,
+      );
       const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
       blockData.push({ text: blockText, tokens: boundary.tokenCount });
     }
@@ -202,11 +213,16 @@ export function getContext(
   // Build tail (messages after last frozen block)
   // For threads: all thread messages (threads don't have their own blocks yet)
   // For channels: messages after last block
-  const tailMessages = isThreadContext ? currentMessages : currentMessages.slice(
-    currentBoundaries.length > 0
-      ? currentMessages.findIndex((m) => m.id === currentBoundaries[currentBoundaries.length - 1]?.lastMessageId) + 1
-      : 0
-  );
+  const tailMessages = isThreadContext
+    ? currentMessages
+    : currentMessages.slice(
+        currentBoundaries.length > 0
+          ? currentMessages.findIndex(
+              (m) =>
+                m.id === currentBoundaries[currentBoundaries.length - 1]?.lastMessageId,
+            ) + 1
+          : 0,
+      );
 
   const tailData: Array<{ text: string; tokens: number }> = [];
 
@@ -218,7 +234,9 @@ export function getContext(
   }
 
   // Calculate totals
-  let totalTokens = blockData.reduce((sum, b) => sum + b.tokens, 0) + tailData.reduce((sum, t) => sum + t.tokens, 0);
+  let totalTokens =
+    blockData.reduce((sum, b) => sum + b.tokens, 0) +
+    tailData.reduce((sum, t) => sum + t.tokens, 0);
 
   // Trim for THIS bot's specific budget (but don't modify global state)
   const finalBlockData = [...blockData];
@@ -263,19 +281,20 @@ function checkAndEvictGlobally(channelId: string, globalMaxTokens: number): void
   if (boundaries.length === 0) return;
 
   // Calculate total tokens across all blocks + tail
-  let totalBlockTokens = boundaries.reduce((sum, b) => sum + b.tokenCount, 0);
+  const totalBlockTokens = boundaries.reduce((sum, b) => sum + b.tokenCount, 0);
 
   // Find tail start
   const lastBoundary = boundaries[boundaries.length - 1];
   const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
-  const tailMessages = lastBoundaryIdx !== -1 ? messages.slice(lastBoundaryIdx + 1) : messages;
+  const tailMessages =
+    lastBoundaryIdx !== -1 ? messages.slice(lastBoundaryIdx + 1) : messages;
 
   let tailTokens = 0;
   for (const msg of tailMessages) {
     tailTokens += estimateMessageTokens(msg.authorName, msg.content);
   }
 
-  let totalTokens = totalBlockTokens + tailTokens;
+  const totalTokens = totalBlockTokens + tailTokens;
 
   // Evict oldest blocks if over global max
   let blocksToEvict = 0;
@@ -321,24 +340,38 @@ function getMessagesInRange(
 
   // Debug warnings for incomplete ranges
   if (!foundFirst) {
-    console.error(`[getMessagesInRange] CRITICAL: firstId ${firstId} not found in ${messages.length} messages!`);
+    console.error(
+      `[getMessagesInRange] CRITICAL: firstId ${firstId} not found in ${messages.length} messages!`,
+    );
   }
   if (!foundLast) {
-    console.error(`[getMessagesInRange] CRITICAL: lastId ${lastId} not found in ${messages.length} messages!`);
+    console.error(
+      `[getMessagesInRange] CRITICAL: lastId ${lastId} not found in ${messages.length} messages!`,
+    );
   }
   if (result.length === 0 && (foundFirst || foundLast)) {
-    console.error(`[getMessagesInRange] WARNING: Empty result despite finding boundary IDs`);
+    console.error(
+      `[getMessagesInRange] WARNING: Empty result despite finding boundary IDs`,
+    );
   }
 
   return result;
 }
 
-function formatMessage(msg: StoredMessage, botUserId: string, botDisplayName: string): string {
+function formatMessage(
+  msg: StoredMessage,
+  botUserId: string,
+  botDisplayName: string,
+): string {
   const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
   return `${authorName}: ${msg.content.trim() || '(empty message)'}`;
 }
 
-function formatMessages(messages: StoredMessage[], botUserId: string, botDisplayName: string): string {
+function formatMessages(
+  messages: StoredMessage[],
+  botUserId: string,
+  botDisplayName: string,
+): string {
   return messages.map((m) => formatMessage(m, botUserId, botDisplayName)).join('\n');
 }
 
@@ -358,13 +391,17 @@ function cleanupEvictedBlocks(channelId: string, numEvicted: number): void {
   // Remove oldest boundaries
   const evictedBoundaries = boundaries.splice(0, numEvicted);
 
-  console.log(`[cleanupEvictedBlocks] Removed ${evictedBoundaries.length} oldest blocks from ${channelId}`);
+  console.log(
+    `[cleanupEvictedBlocks] Removed ${evictedBoundaries.length} oldest blocks from ${channelId}`,
+  );
 
   // Also trim messages that are no longer referenced
   if (messages && messageIds && evictedBoundaries.length > 0) {
     const lastEvictedBoundary = evictedBoundaries[evictedBoundaries.length - 1];
     if (lastEvictedBoundary) {
-      const lastEvictedIdx = messages.findIndex((m) => m.id === lastEvictedBoundary.lastMessageId);
+      const lastEvictedIdx = messages.findIndex(
+        (m) => m.id === lastEvictedBoundary.lastMessageId,
+      );
       if (lastEvictedIdx !== -1) {
         // Remove all messages up to and including the last evicted block
         const removedMessages = messages.splice(0, lastEvictedIdx + 1);
@@ -374,7 +411,9 @@ function cleanupEvictedBlocks(channelId: string, numEvicted: number): void {
           messageIds.delete(msg.id);
         }
 
-        console.log(`[cleanupEvictedBlocks] Trimmed ${removedMessages.length} messages from memory for ${channelId}`);
+        console.log(
+          `[cleanupEvictedBlocks] Trimmed ${removedMessages.length} messages from memory for ${channelId}`,
+        );
       }
     }
   }
@@ -403,7 +442,9 @@ function freezeBlocks(channelId: string, options: FreezeOptions = {}): number {
   let tailStartIdx = 0;
   if (boundaries.length > 0) {
     const lastBoundary = boundaries[boundaries.length - 1];
-    const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
+    const lastBoundaryIdx = messages.findIndex(
+      (m) => m.id === lastBoundary.lastMessageId,
+    );
     if (lastBoundaryIdx !== -1) {
       tailStartIdx = lastBoundaryIdx + 1;
     } else if (verbose) {
@@ -568,13 +609,20 @@ export async function loadHistoryFromDiscord(
 
       // Get oldest boundary message ID to ensure we fetch back far enough for cache consistency
       const existingBoundaries = blockBoundaries.get(channelId) ?? [];
-      const oldestBoundaryMessageId = existingBoundaries.length > 0 ? existingBoundaries[0].firstMessageId : undefined;
+      const oldestBoundaryMessageId =
+        existingBoundaries.length > 0 ? existingBoundaries[0].firstMessageId : undefined;
 
       if (oldestBoundaryMessageId) {
-        console.log(`[loadHistoryFromDiscord] ${channelId} has ${existingBoundaries.length} saved boundaries, ensuring fetch includes message ${oldestBoundaryMessageId}`);
+        console.log(
+          `[loadHistoryFromDiscord] ${channelId} has ${existingBoundaries.length} saved boundaries, ensuring fetch includes message ${oldestBoundaryMessageId}`,
+        );
       }
 
-      const messages = await fetchChannelHistory(channel, maxTokensPerChannel, oldestBoundaryMessageId);
+      const messages = await fetchChannelHistory(
+        channel,
+        maxTokensPerChannel,
+        oldestBoundaryMessageId,
+      );
 
       // Initialize storage for this channel
       messagesByChannel.set(channelId, messages);
@@ -649,7 +697,9 @@ export async function lazyLoadThread(
 
     if (resetInfo) {
       // Thread was reset - only load messages after reset boundary
-      console.log(`[LazyLoad] Thread ${threadId} was reset at row_id ${resetInfo.lastResetRowId}`);
+      console.log(
+        `[LazyLoad] Thread ${threadId} was reset at row_id ${resetInfo.lastResetRowId}`,
+      );
       messages = db.getMessagesAfterRow(threadId, resetInfo.lastResetRowId, threadId);
       boundaries = []; // No boundaries - fresh start after reset
     } else {
@@ -661,10 +711,12 @@ export async function lazyLoadThread(
     // Initialize in-memory storage
     ensureChannelInitialized(threadId);
     messagesByChannel.set(threadId, messages);
-    messageIdsByChannel.set(threadId, new Set(messages.map(m => m.id)));
+    messageIdsByChannel.set(threadId, new Set(messages.map((m) => m.id)));
     blockBoundaries.set(threadId, boundaries);
 
-    console.log(`[LazyLoad] Loaded ${messages.length} messages and ${boundaries.length} boundaries from DB`);
+    console.log(
+      `[LazyLoad] Loaded ${messages.length} messages and ${boundaries.length} boundaries from DB`,
+    );
 
     // Backfill any messages missed during downtime from Discord
     const backfilled = await backfillThreadFromDiscord(threadId, client);
@@ -674,7 +726,6 @@ export async function lazyLoadThread(
 
     // Freeze blocks if enough unfrozen messages accumulated
     freezeBlocksFromHistory(threadId);
-
   } catch (err) {
     console.error(`[LazyLoad] Failed to load thread ${threadId}:`, err);
     // Ensure initialized even on error
@@ -701,7 +752,7 @@ async function backfillThreadFromDiscord(
         const resetInfo = db.getThreadResetInfo(threadId);
         if (resetInfo?.lastResetDiscordMessageId) {
           console.log(
-            `[Backfill] Thread ${threadId} was reset, fetching only post-reset messages after Discord ID ${resetInfo.lastResetDiscordMessageId}`
+            `[Backfill] Thread ${threadId} was reset, fetching only post-reset messages after Discord ID ${resetInfo.lastResetDiscordMessageId}`,
           );
 
           const channel = await client.channels.fetch(threadId);
@@ -745,13 +796,18 @@ async function backfillThreadFromDiscord(
       }
 
       // No reset - fetch full history (new thread)
-      console.log(`[Backfill] Thread ${threadId} has no messages, fetching full history from Discord`);
+      console.log(
+        `[Backfill] Thread ${threadId} has no messages, fetching full history from Discord`,
+      );
       const channel = await client.channels.fetch(threadId);
       if (!channel || !channel.isTextBased()) {
         return 0;
       }
 
-      const fetchedMessages = await fetchChannelHistory(channel, globalConfig.maxContextTokens);
+      const fetchedMessages = await fetchChannelHistory(
+        channel,
+        globalConfig.maxContextTokens,
+      );
 
       // Store all fetched messages
       for (const msg of fetchedMessages) {
@@ -805,7 +861,6 @@ async function backfillThreadFromDiscord(
     }
 
     return newMessages.length;
-
   } catch (err) {
     console.error(`[Backfill] Failed to backfill thread ${threadId}:`, err);
     return 0;
@@ -966,7 +1021,7 @@ export function clearThread(threadId: string, parentChannelId: string): void {
       if (lastRowId !== null) {
         db.recordThreadReset(threadId, lastRowId, lastDiscordMessageId);
         console.log(
-          `[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${lastDiscordMessageId}`
+          `[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${lastDiscordMessageId}`,
         );
       }
 
@@ -986,7 +1041,11 @@ export function clearAll(): void {
   blockBoundaries.clear();
 }
 
-export function getStats(): { channels: number; totalMessages: number; totalBlocks: number } {
+export function getStats(): {
+  channels: number;
+  totalMessages: number;
+  totalBlocks: number;
+} {
   let totalMessages = 0;
   let totalBlocks = 0;
 

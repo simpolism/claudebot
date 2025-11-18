@@ -78,8 +78,14 @@ afterEach(() => {
 describe('message-store', () => {
   it('appends messages to in-memory storage', () => {
     const store = getStoreModule();
-    const msg1 = createMockDiscordMessage({ id: '1', content: 'Hello', authorId: 'alice' }, 'chan');
-    const msg2 = createMockDiscordMessage({ id: '2', content: 'World', authorId: 'bob' }, 'chan');
+    const msg1 = createMockDiscordMessage(
+      { id: '1', content: 'Hello', authorId: 'alice' },
+      'chan',
+    );
+    const msg2 = createMockDiscordMessage(
+      { id: '2', content: 'World', authorId: 'bob' },
+      'chan',
+    );
 
     store.appendMessage(msg1);
     store.appendMessage(msg2);
@@ -141,7 +147,11 @@ describe('message-store', () => {
     // Add 10 messages with longer content
     for (let i = 1; i <= 10; i++) {
       const msg = createMockDiscordMessage(
-        { id: String(i), content: `This is a longer message number ${i} with more content`, authorId: 'alice' },
+        {
+          id: String(i),
+          content: `This is a longer message number ${i} with more content`,
+          authorId: 'alice',
+        },
         channelId,
       );
       store.appendMessage(msg);

@@ -90,8 +90,12 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       model: jsonConfig.model,
       supportsImageBlocks: jsonConfig.supportsImageBlocks,
       openaiBaseUrl: jsonConfig.openaiBaseUrl,
-      openaiApiKey: jsonConfig.openaiApiKeyEnv ? process.env[jsonConfig.openaiApiKeyEnv] || '' : undefined,
-      geminiApiKey: jsonConfig.geminiApiKeyEnv ? process.env[jsonConfig.geminiApiKeyEnv] || '' : undefined,
+      openaiApiKey: jsonConfig.openaiApiKeyEnv
+        ? process.env[jsonConfig.openaiApiKeyEnv] || ''
+        : undefined,
+      geminiApiKey: jsonConfig.geminiApiKeyEnv
+        ? process.env[jsonConfig.geminiApiKeyEnv] || ''
+        : undefined,
       geminiOutputMode: jsonConfig.geminiOutputMode,
       maxContextTokens: jsonConfig.maxContextTokens,
       maxTokens: jsonConfig.maxTokens,
@@ -149,6 +153,8 @@ export function getMaxBotContextTokens(): number {
     return globalConfig.maxContextTokens;
   }
   return Math.max(
-    ...activeBotConfigs.map((config) => config.maxContextTokens ?? globalConfig.maxContextTokens),
+    ...activeBotConfigs.map(
+      (config) => config.maxContextTokens ?? globalConfig.maxContextTokens,
+    ),
   );
 }

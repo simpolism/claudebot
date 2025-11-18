@@ -1,5 +1,10 @@
 import { Attachment, Client, Message } from 'discord.js';
-import { getContext, appendMessage, getBlockBoundaries, lazyLoadThread } from './message-store';
+import {
+  getContext,
+  appendMessage,
+  getBlockBoundaries,
+  lazyLoadThread,
+} from './message-store';
 import { ConversationData, ImageBlock, SimpleMessage } from './types';
 
 // ---------- Context Building ----------
@@ -34,7 +39,7 @@ export async function buildConversationContext(params: {
     botUserId,
     botDisplayName,
     threadId,
-    parentChannelId ?? undefined
+    parentChannelId ?? undefined,
   );
 
   // Convert tail strings to SimpleMessage format
@@ -56,7 +61,9 @@ export async function buildConversationContext(params: {
 
 // ---------- Image Handling ----------
 
-export function getImageBlocksFromAttachments(attachments: Message['attachments']): ImageBlock[] {
+export function getImageBlocksFromAttachments(
+  attachments: Message['attachments'],
+): ImageBlock[] {
   const blocks: ImageBlock[] = [];
 
   attachments.forEach((attachment) => {

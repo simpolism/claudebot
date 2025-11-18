@@ -303,7 +303,7 @@ describe('Thread Support - Lazy Loading', () => {
     expect(loadedMessages[1]?.content).toBe('New message 2');
 
     // Verify old messages are NOT loaded
-    const hasOldMessage = loadedMessages.some(m => m.content.includes('Old'));
+    const hasOldMessage = loadedMessages.some((m) => m.content.includes('Old'));
     expect(hasOldMessage).toBe(false);
   });
 
@@ -424,7 +424,7 @@ describe('Thread Support - Integration Tests', () => {
 
     const loadedMessages = store.getChannelMessages(threadId);
     expect(loadedMessages).toHaveLength(3);
-    expect(loadedMessages.map(m => m.content)).toEqual([
+    expect(loadedMessages.map((m) => m.content)).toEqual([
       'Before downtime 1',
       'Before downtime 2',
       'Before downtime 3',
@@ -513,7 +513,9 @@ describe('Thread Support - Integration Tests', () => {
     expect(loadedMessages[1]?.content).toBe('Post-reset message 2');
 
     // Verify old messages are NOT present
-    const hasPreResetMessage = loadedMessages.some(m => m.content.includes('Pre-reset'));
+    const hasPreResetMessage = loadedMessages.some((m) =>
+      m.content.includes('Pre-reset'),
+    );
     expect(hasPreResetMessage).toBe(false);
   });
 
@@ -535,20 +537,84 @@ describe('Thread Support - Integration Tests', () => {
               fetch: async (options: any) => {
                 // Simulate Discord having both pre-reset and post-reset messages
                 const allDiscordMessages = [
-                  { id: '8001', content: 'Pre-reset 1', author: { id: 'user1', username: 'Alice', globalName: 'Alice', tag: 'Alice#0000' }, createdTimestamp: Date.now(), attachments: new Map(), channel: { id: threadId, isThread: () => true, parentId: parentChannelId } },
-                  { id: '8002', content: 'Pre-reset 2', author: { id: 'user2', username: 'Bob', globalName: 'Bob', tag: 'Bob#0000' }, createdTimestamp: Date.now() + 1000, attachments: new Map(), channel: { id: threadId, isThread: () => true, parentId: parentChannelId } },
-                  { id: '8003', content: 'Post-reset 1', author: { id: 'user1', username: 'Alice', globalName: 'Alice', tag: 'Alice#0000' }, createdTimestamp: Date.now() + 2000, attachments: new Map(), channel: { id: threadId, isThread: () => true, parentId: parentChannelId } },
-                  { id: '8004', content: 'Post-reset 2', author: { id: 'user2', username: 'Bob', globalName: 'Bob', tag: 'Bob#0000' }, createdTimestamp: Date.now() + 3000, attachments: new Map(), channel: { id: threadId, isThread: () => true, parentId: parentChannelId } },
+                  {
+                    id: '8001',
+                    content: 'Pre-reset 1',
+                    author: {
+                      id: 'user1',
+                      username: 'Alice',
+                      globalName: 'Alice',
+                      tag: 'Alice#0000',
+                    },
+                    createdTimestamp: Date.now(),
+                    attachments: new Map(),
+                    channel: {
+                      id: threadId,
+                      isThread: () => true,
+                      parentId: parentChannelId,
+                    },
+                  },
+                  {
+                    id: '8002',
+                    content: 'Pre-reset 2',
+                    author: {
+                      id: 'user2',
+                      username: 'Bob',
+                      globalName: 'Bob',
+                      tag: 'Bob#0000',
+                    },
+                    createdTimestamp: Date.now() + 1000,
+                    attachments: new Map(),
+                    channel: {
+                      id: threadId,
+                      isThread: () => true,
+                      parentId: parentChannelId,
+                    },
+                  },
+                  {
+                    id: '8003',
+                    content: 'Post-reset 1',
+                    author: {
+                      id: 'user1',
+                      username: 'Alice',
+                      globalName: 'Alice',
+                      tag: 'Alice#0000',
+                    },
+                    createdTimestamp: Date.now() + 2000,
+                    attachments: new Map(),
+                    channel: {
+                      id: threadId,
+                      isThread: () => true,
+                      parentId: parentChannelId,
+                    },
+                  },
+                  {
+                    id: '8004',
+                    content: 'Post-reset 2',
+                    author: {
+                      id: 'user2',
+                      username: 'Bob',
+                      globalName: 'Bob',
+                      tag: 'Bob#0000',
+                    },
+                    createdTimestamp: Date.now() + 3000,
+                    attachments: new Map(),
+                    channel: {
+                      id: threadId,
+                      isThread: () => true,
+                      parentId: parentChannelId,
+                    },
+                  },
                 ];
 
                 // Filter based on "after" option (simulating Discord API)
                 const after = options?.after;
                 const filtered = after
-                  ? allDiscordMessages.filter(m => BigInt(m.id) > BigInt(after))
+                  ? allDiscordMessages.filter((m) => BigInt(m.id) > BigInt(after))
                   : allDiscordMessages;
 
                 const map = new Map();
-                filtered.forEach(m => map.set(m.id, m));
+                filtered.forEach((m) => map.set(m.id, m));
                 return map;
               },
             },
@@ -609,9 +675,13 @@ describe('Thread Support - Integration Tests', () => {
     expect(loadedMessages[1]?.content).toBe('Post-reset 2');
 
     // 6. CRITICAL: Verify pre-reset messages were NOT fetched
-    const hasPreResetMessage = loadedMessages.some(m => m.content.includes('Pre-reset'));
+    const hasPreResetMessage = loadedMessages.some((m) =>
+      m.content.includes('Pre-reset'),
+    );
     expect(hasPreResetMessage).toBe(false);
 
-    console.log('✅ P1 Bug Fix Verified: Pre-reset messages were NOT re-fetched from Discord');
+    console.log(
+      '✅ P1 Bug Fix Verified: Pre-reset messages were NOT re-fetched from Discord',
+    );
   });
 });

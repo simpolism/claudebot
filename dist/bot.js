@@ -208,7 +208,7 @@ function setupBotEvents(instance) {
             console.log(`[${config.name}] Processing mention ${msg.id} in ${channelId} at ${new Date(receiveTime).toISOString()}`);
             try {
                 const contextStart = Date.now();
-                const conversationData = (0, context_1.buildConversationContext)({
+                const conversationData = await (0, context_1.buildConversationContext)({
                     channel: msg.channel,
                     maxContextTokens: resolved.maxContextTokens,
                     client,

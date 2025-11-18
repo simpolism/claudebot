@@ -1,9 +1,27 @@
 import 'dotenv/config';
-import { Client, Events, GatewayIntentBits, Message, Partials, AttachmentBuilder } from 'discord.js';
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  Message,
+  Partials,
+  AttachmentBuilder,
+} from 'discord.js';
 import { createAIProvider, AIProvider } from './providers';
 import { activeBotConfigs, globalConfig, resolveConfig, BotConfig } from './config';
-import { loadBoundariesFromDisk, loadHistoryFromDiscord, appendMessage, appendStoredMessage, StoredMessage, clearThread } from './message-store';
-import { buildConversationContext, getImageBlocksFromAttachments, getChannelSpeakers } from './context';
+import {
+  loadBoundariesFromDisk,
+  loadHistoryFromDiscord,
+  appendMessage,
+  appendStoredMessage,
+  StoredMessage,
+  clearThread,
+} from './message-store';
+import {
+  buildConversationContext,
+  getImageBlocksFromAttachments,
+  getChannelSpeakers,
+} from './context';
 import { chunkReplyText, convertOutputMentions } from './discord-utils';
 import { startDebugServer } from './debug-server';
 import { initializeDatabase, closeDatabase, getDatabaseStats } from './database';
@@ -136,7 +154,9 @@ function startTypingIndicator(channel: Message['channel']): () => void {
 }
 
 type SendCapableChannel = Message['channel'] & {
-  send: (content: string | { content: string; files?: AttachmentBuilder[] }) => Promise<Message>;
+  send: (
+    content: string | { content: string; files?: AttachmentBuilder[] },
+  ) => Promise<Message>;
 };
 
 function hasSend(channel: Message['channel']): channel is SendCapableChannel {
@@ -209,7 +229,9 @@ function setupBotEvents(instance: BotInstance): void {
     const content = message.content.trim();
     if (content === '/reset' || content.startsWith('/reset ')) {
       if (!message.channel.isThread()) {
-        await message.reply('❌ The `/reset` command only works in threads. Use threads to isolate conversations.');
+        await message.reply(
+          '❌ The `/reset` command only works in threads. Use threads to isolate conversations.',
+        );
         return;
       }
 
@@ -270,14 +292,14 @@ function setupBotEvents(instance: BotInstance): void {
           botDisplayName,
         });
         const contextDuration = Date.now() - contextStart;
-        console.log(`[${config.name}] Context built for ${msg.id} in ${contextDuration}ms`);
+        console.log(
+          `[${config.name}] Context built for ${msg.id} in ${contextDuration}ms`,
+        );
 
         stopTyping = startTypingIndicator(msg.channel);
         const imageBlocks = getImageBlocksFromAttachments(msg.attachments);
         const otherSpeakers = getChannelSpeakers(channelId, client.user?.id);
-        const guardSpeakers = Array.from(
-          new Set([...otherSpeakers, botDisplayName]),
-        ); // Include bot name so guard catches self fragments
+        const guardSpeakers = Array.from(new Set([...otherSpeakers, botDisplayName])); // Include bot name so guard catches self fragments
         const providerStart = Date.now();
         const aiReply = await aiProvider.send({
           conversationData,
@@ -287,7 +309,9 @@ function setupBotEvents(instance: BotInstance): void {
         });
 
         const providerDuration = Date.now() - providerStart;
-        console.log(`[${config.name}] Provider responded for ${msg.id} in ${providerDuration}ms`);
+        console.log(
+          `[${config.name}] Provider responded for ${msg.id} in ${providerDuration}ms`,
+        );
         const replyText = aiReply.text;
         stopTyping();
         stopTyping = null;
@@ -326,7 +350,8 @@ function setupBotEvents(instance: BotInstance): void {
               const chunk = restChunks[i];
               const isLastChunk = i === restChunks.length - 1;
               // Attach image to last message if present
-              const files = isLastChunk && imageAttachment ? [imageAttachment] : undefined;
+              const files =
+                isLastChunk && imageAttachment ? [imageAttachment] : undefined;
 
               if (hasSend(msg.channel)) {
                 const sent = await msg.channel.send({ content: chunk, files });
@@ -357,7 +382,9 @@ function setupBotEvents(instance: BotInstance): void {
               .map((a) => `![image](${a.url})`);
             if (imageUrls.length > 0) {
               // If no text content, just use image markers; otherwise append with newline
-              content = content ? content + '\n' + imageUrls.join('\n') : imageUrls.join('\n');
+              content = content
+                ? content + '\n' + imageUrls.join('\n')
+                : imageUrls.join('\n');
             }
           }
 
@@ -369,7 +396,9 @@ function setupBotEvents(instance: BotInstance): void {
           // Detect if this is a thread message
           const isThread = sentMsg.channel.isThread();
           const threadId = isThread ? sentMsg.channel.id : null;
-          const parentChannelId = isThread ? (sentMsg.channel.parentId ?? sentMsg.channel.id) : sentMsg.channel.id;
+          const parentChannelId = isThread
+            ? (sentMsg.channel.parentId ?? sentMsg.channel.id)
+            : sentMsg.channel.id;
 
           const stored: StoredMessage = {
             id: sentMsg.id,

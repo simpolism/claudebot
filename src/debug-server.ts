@@ -52,7 +52,9 @@ function getChannelDebugInfo(channelId: string): ChannelDebugInfo {
   let tailStartIdx = 0;
   if (boundaries.length > 0) {
     const lastBoundary = boundaries[boundaries.length - 1];
-    const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary?.lastMessageId);
+    const lastBoundaryIdx = messages.findIndex(
+      (m) => m.id === lastBoundary?.lastMessageId,
+    );
     if (lastBoundaryIdx !== -1) {
       tailStartIdx = lastBoundaryIdx + 1;
     }
@@ -62,7 +64,8 @@ function getChannelDebugInfo(channelId: string): ChannelDebugInfo {
   const blockInfo = boundaries.map((boundary, idx) => {
     const firstIdx = messages.findIndex((m) => m.id === boundary.firstMessageId);
     const lastIdx = messages.findIndex((m) => m.id === boundary.lastMessageId);
-    const blockMessageCount = firstIdx !== -1 && lastIdx !== -1 ? lastIdx - firstIdx + 1 : 0;
+    const blockMessageCount =
+      firstIdx !== -1 && lastIdx !== -1 ? lastIdx - firstIdx + 1 : 0;
 
     const firstMsg = messages.find((m) => m.id === boundary.firstMessageId);
     const lastMsg = messages.find((m) => m.id === boundary.lastMessageId);
@@ -73,8 +76,12 @@ function getChannelDebugInfo(channelId: string): ChannelDebugInfo {
       lastMessageId: boundary.lastMessageId,
       tokenCount: boundary.tokenCount,
       messageCount: blockMessageCount,
-      firstMessage: firstMsg ? `${firstMsg.authorName}: ${firstMsg.content.slice(0, 100)}...` : 'NOT FOUND',
-      lastMessage: lastMsg ? `${lastMsg.authorName}: ${lastMsg.content.slice(0, 100)}...` : 'NOT FOUND',
+      firstMessage: firstMsg
+        ? `${firstMsg.authorName}: ${firstMsg.content.slice(0, 100)}...`
+        : 'NOT FOUND',
+      lastMessage: lastMsg
+        ? `${lastMsg.authorName}: ${lastMsg.content.slice(0, 100)}...`
+        : 'NOT FOUND',
     };
   });
 
@@ -122,7 +129,9 @@ interface BotPayloadPreview {
 
 function getBotInstance(botName: string): BotInstance | undefined {
   return botInstances.find(
-    (inst) => inst.config.name.toLowerCase() === botName.toLowerCase() || inst.client.user?.username?.toLowerCase() === botName.toLowerCase(),
+    (inst) =>
+      inst.config.name.toLowerCase() === botName.toLowerCase() ||
+      inst.client.user?.username?.toLowerCase() === botName.toLowerCase(),
   );
 }
 
@@ -134,10 +143,15 @@ function buildTranscriptText(blocks: string[], tail: SimpleMessage[]): string {
   return parts.join('\n').trim();
 }
 
-function buildPayloadPreview(channelId: string, botName: string): BotPayloadPreview | { error: string } {
+function buildPayloadPreview(
+  channelId: string,
+  botName: string,
+): BotPayloadPreview | { error: string } {
   const instance = getBotInstance(botName);
   if (!instance) {
-    return { error: `Bot "${botName}" not found. Available bots: ${botInstances.map((i) => i.config.name).join(', ')}` };
+    return {
+      error: `Bot "${botName}" not found. Available bots: ${botInstances.map((i) => i.config.name).join(', ')}`,
+    };
   }
 
   if (!instance.client.user) {
@@ -145,12 +159,23 @@ function buildPayloadPreview(channelId: string, botName: string): BotPayloadPrev
   }
 
   const botUserId = instance.client.user.id;
-  const botDisplayName = instance.client.user.username ?? instance.client.user.globalName ?? instance.client.user.tag ?? 'Bot';
+  const botDisplayName =
+    instance.client.user.username ??
+    instance.client.user.globalName ??
+    instance.client.user.tag ??
+    'Bot';
   const resolved = resolveConfig(instance.config);
 
   // Note: Debug server shows channel context, not thread context
   // To support threads, would need to detect thread and pass threadId/parentChannelId
-  const contextResult = getContext(channelId, resolved.maxContextTokens, botUserId, botDisplayName, null, undefined);
+  const contextResult = getContext(
+    channelId,
+    resolved.maxContextTokens,
+    botUserId,
+    botDisplayName,
+    null,
+    undefined,
+  );
 
   // Convert to SimpleMessage format (as done in context.ts)
   const tail: SimpleMessage[] = contextResult.tail.map((content) => ({
@@ -170,7 +195,12 @@ function buildPayloadPreview(channelId: string, botName: string): BotPayloadPrev
   if (resolved.provider === 'anthropic') {
     apiPayload = buildAnthropicPayloadPreview(transcript, botDisplayName, resolved);
   } else if (resolved.provider === 'openai') {
-    apiPayload = buildOpenAIPayloadPreview(transcript, botDisplayName, resolved, instance.config.supportsImageBlocks ?? false);
+    apiPayload = buildOpenAIPayloadPreview(
+      transcript,
+      botDisplayName,
+      resolved,
+      instance.config.supportsImageBlocks ?? false,
+    );
   } else if (resolved.provider === 'gemini') {
     apiPayload = buildGeminiPayloadPreview(transcript, botDisplayName, resolved);
   } else {
@@ -302,7 +332,11 @@ function buildGeminiPayloadPreview(
   ];
 
   const responseModalities =
-    config.geminiOutputMode === 'image' ? ['Image'] : config.geminiOutputMode === 'text' ? ['Text'] : ['Text', 'Image'];
+    config.geminiOutputMode === 'image'
+      ? ['Image']
+      : config.geminiOutputMode === 'text'
+        ? ['Text']
+        : ['Text', 'Image'];
 
   return {
     model: config.model,
@@ -311,7 +345,8 @@ function buildGeminiPayloadPreview(
       responseModalities,
       systemInstruction: config.systemPrompt?.trim() || undefined,
     },
-    _note: 'This shows the exact structure sent to Gemini API (images not included in preview)',
+    _note:
+      'This shows the exact structure sent to Gemini API (images not included in preview)',
   };
 }
 
@@ -421,7 +456,10 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       }
       // Return just the formatted transcript text as plain text
       res.setHeader('Content-Type', 'text/plain');
-      const transcriptText = buildTranscriptText(preview.transcript.blocks, preview.transcript.tail);
+      const transcriptText = buildTranscriptText(
+        preview.transcript.blocks,
+        preview.transcript.tail,
+      );
       res.writeHead(200);
       res.end(transcriptText + `\n${preview.botName}:`);
     } else {

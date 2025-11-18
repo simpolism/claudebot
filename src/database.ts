@@ -249,7 +249,9 @@ const MIGRATIONS: Migration[] = [
       const columns = db.pragma('table_info(block_boundaries)') as any[];
       const firstRowIdCheck = columns.find((col: any) => col.name === 'first_row_id');
       if (firstRowIdCheck) {
-        console.log('[Migration v3] row_id columns already exist in block_boundaries, skipping');
+        console.log(
+          '[Migration v3] row_id columns already exist in block_boundaries, skipping',
+        );
         return;
       }
 
@@ -293,7 +295,9 @@ const MIGRATIONS: Migration[] = [
 
       // Check if column already exists
       const columns = db.pragma('table_info(thread_metadata)') as any[];
-      const columnExists = columns.find((col: any) => col.name === 'last_reset_discord_message_id');
+      const columnExists = columns.find(
+        (col: any) => col.name === 'last_reset_discord_message_id',
+      );
       if (columnExists) {
         console.log('[Migration v5] Column already exists, skipping');
         return;
@@ -313,7 +317,7 @@ function getCurrentVersion(db: Database.Database): number {
   // Check if schema_migrations table exists
   const tableExists = db
     .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'`
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'`,
     )
     .get();
 
@@ -339,16 +343,18 @@ function runMigrations(db: Database.Database): void {
   }
 
   console.log(
-    `[Database] Running ${pendingMigrations.length} migration(s) from version ${currentVersion}...`
+    `[Database] Running ${pendingMigrations.length} migration(s) from version ${currentVersion}...`,
   );
 
   for (const migration of pendingMigrations) {
-    console.log(`[Database] Applying migration ${migration.version}: ${migration.description}`);
+    console.log(
+      `[Database] Applying migration ${migration.version}: ${migration.description}`,
+    );
 
     db.transaction(() => {
       migration.up(db);
       db.prepare(
-        'INSERT INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)'
+        'INSERT INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)',
       ).run(migration.version, Date.now(), migration.description);
     })();
 
@@ -385,13 +391,15 @@ export function insertMessage(message: StoredMessage): number | null {
     message.authorName,
     message.content,
     message.timestamp,
-    message.createdAt
+    message.createdAt,
   );
 
   // If changes is 0, it was a duplicate (INSERT OR IGNORE)
   if (result.changes === 0) {
     // Fetch existing row_id
-    const existing = db.prepare('SELECT row_id FROM messages WHERE id = ?').get(message.id) as { row_id: number } | undefined;
+    const existing = db
+      .prepare('SELECT row_id FROM messages WHERE id = ?')
+      .get(message.id) as { row_id: number } | undefined;
     return existing?.row_id ?? null;
   }
 
@@ -429,7 +437,7 @@ export function insertMessages(messages: StoredMessage[]): number[] {
         msg.authorName,
         msg.content,
         msg.timestamp,
-        msg.createdAt
+        msg.createdAt,
       );
 
       if (result.changes === 0) {
@@ -451,7 +459,7 @@ export function insertMessages(messages: StoredMessage[]): number[] {
  */
 export function getMessagesInRange(
   firstMessageId: string,
-  lastMessageId: string
+  lastMessageId: string,
 ): StoredMessage[] {
   const db = getDb();
 
@@ -472,7 +480,7 @@ export function getMessagesInRange(
 export function getMessages(
   channelId: string,
   threadId: string | null,
-  limit?: number
+  limit?: number,
 ): StoredMessage[] {
   const db = getDb();
 
@@ -496,7 +504,7 @@ export function getMessages(
 export function getTailMessages(
   channelId: string,
   threadId: string | null,
-  lastBoundaryMessageId: string | null
+  lastBoundaryMessageId: string | null,
 ): StoredMessage[] {
   const db = getDb();
 
@@ -560,7 +568,10 @@ export function messageExists(messageId: string): boolean {
  * Get the last row_id for a channel/thread.
  * Returns null if no messages exist.
  */
-export function getLastRowId(channelId: string, threadId: string | null = null): number | null {
+export function getLastRowId(
+  channelId: string,
+  threadId: string | null = null,
+): number | null {
   const db = getDb();
 
   const stmt = db.prepare(`
@@ -580,7 +591,7 @@ export function getLastRowId(channelId: string, threadId: string | null = null):
 export function getMessagesAfterRow(
   channelId: string,
   afterRowId: number,
-  threadId: string | null = null
+  threadId: string | null = null,
 ): StoredMessage[] {
   const db = getDb();
 
@@ -593,7 +604,7 @@ export function getMessagesAfterRow(
   `);
 
   const rows = stmt.all(channelId, threadId, afterRowId) as any[];
-  return rows.map(row => ({
+  return rows.map((row) => ({
     rowId: row.row_id,
     id: row.id,
     channelId: row.channel_id,
@@ -612,7 +623,7 @@ export function getMessagesAfterRow(
  */
 export function getMessagesByRowRange(
   firstRowId: number,
-  lastRowId: number
+  lastRowId: number,
 ): StoredMessage[] {
   const db = getDb();
 
@@ -625,7 +636,7 @@ export function getMessagesByRowRange(
   `);
 
   const rows = stmt.all(firstRowId, lastRowId) as any[];
-  return rows.map(row => ({
+  return rows.map((row) => ({
     rowId: row.row_id,
     id: row.id,
     channelId: row.channel_id,
@@ -677,7 +688,7 @@ export function insertBlockBoundary(boundary: BlockBoundary): void {
     boundary.firstRowId ?? null,
     boundary.lastRowId ?? null,
     boundary.tokenCount,
-    boundary.createdAt
+    boundary.createdAt,
   );
 }
 
@@ -687,7 +698,7 @@ export function insertBlockBoundary(boundary: BlockBoundary): void {
  */
 export function getBoundaries(
   channelId: string,
-  threadId: string | null = null
+  threadId: string | null = null,
 ): BlockBoundary[] {
   const db = getDb();
 
@@ -700,7 +711,7 @@ export function getBoundaries(
   `);
 
   const rows = stmt.all(channelId, threadId) as any[];
-  return rows.map(row => ({
+  return rows.map((row) => ({
     id: row.id,
     channelId: row.channel_id,
     threadId: row.thread_id,
@@ -717,10 +728,7 @@ export function getBoundaries(
  * Clear all block boundaries for a channel/thread.
  * Used during /reset.
  */
-export function clearBoundaries(
-  channelId: string,
-  threadId: string | null = null
-): void {
+export function clearBoundaries(channelId: string, threadId: string | null = null): void {
   const db = getDb();
 
   const stmt = db.prepare(`
@@ -737,7 +745,7 @@ export function clearBoundaries(
  */
 export function getBlockBoundaries(
   channelId: string,
-  threadId: string | null
+  threadId: string | null,
 ): BlockBoundary[] {
   const db = getDb();
 
@@ -756,7 +764,7 @@ export function getBlockBoundaries(
  */
 export function getLastBlockBoundary(
   channelId: string,
-  threadId: string | null
+  threadId: string | null,
 ): BlockBoundary | null {
   const db = getDb();
 
@@ -778,7 +786,7 @@ export function getLastBlockBoundary(
 export function deleteOldestBlockBoundaries(
   channelId: string,
   threadId: string | null,
-  count: number
+  count: number,
 ): void {
   if (count <= 0) return;
 
@@ -823,10 +831,26 @@ export function getDatabaseStats(): {
 } {
   const db = getDb();
 
-  const messageCount = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
-  const boundaryCount = (db.prepare('SELECT COUNT(*) as count FROM block_boundaries').get() as { count: number }).count;
-  const channelCount = (db.prepare('SELECT COUNT(DISTINCT parent_channel_id) as count FROM messages').get() as { count: number }).count;
-  const threadCount = (db.prepare('SELECT COUNT(DISTINCT thread_id) as count FROM messages WHERE thread_id IS NOT NULL').get() as { count: number }).count;
+  const messageCount = (
+    db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }
+  ).count;
+  const boundaryCount = (
+    db.prepare('SELECT COUNT(*) as count FROM block_boundaries').get() as {
+      count: number;
+    }
+  ).count;
+  const channelCount = (
+    db
+      .prepare('SELECT COUNT(DISTINCT parent_channel_id) as count FROM messages')
+      .get() as { count: number }
+  ).count;
+  const threadCount = (
+    db
+      .prepare(
+        'SELECT COUNT(DISTINCT thread_id) as count FROM messages WHERE thread_id IS NOT NULL',
+      )
+      .get() as { count: number }
+  ).count;
 
   let databaseSizeBytes = 0;
   try {
@@ -883,7 +907,7 @@ export function clearAllData(): void {
 export function recordThreadReset(
   threadId: string,
   lastRowId: number,
-  lastDiscordMessageId: string | null = null
+  lastDiscordMessageId: string | null = null,
 ): void {
   const db = getDb();
 
@@ -962,8 +986,12 @@ export function clearChannel(channelId: string): void {
   const db = getDb();
 
   db.transaction(() => {
-    db.prepare('DELETE FROM messages WHERE channel_id = ? AND thread_id IS NULL').run(channelId);
-    db.prepare('DELETE FROM block_boundaries WHERE channel_id = ? AND thread_id IS NULL').run(channelId);
+    db.prepare('DELETE FROM messages WHERE channel_id = ? AND thread_id IS NULL').run(
+      channelId,
+    );
+    db.prepare(
+      'DELETE FROM block_boundaries WHERE channel_id = ? AND thread_id IS NULL',
+    ).run(channelId);
   })();
 
   console.log(`[Database] Cleared channel ${channelId}`);
