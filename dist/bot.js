@@ -182,7 +182,7 @@ function setupBotEvents(instance) {
                 // Only first bot reacts
                 if (!reactedResetMessages.has(message.id)) {
                     reactedResetMessages.add(message.id);
-                    await message.react('❌');
+                    await message.react('⚠️');
                 }
                 return;
             }
@@ -192,7 +192,7 @@ function setupBotEvents(instance) {
                 // Only first bot reacts
                 if (!reactedResetMessages.has(message.id)) {
                     reactedResetMessages.add(message.id);
-                    await message.react('❌');
+                    await message.react('⚠️');
                 }
                 return;
             }
@@ -219,7 +219,7 @@ function setupBotEvents(instance) {
                 // Only first bot reacts with error
                 if (!reactedResetMessages.has(message.id)) {
                     reactedResetMessages.add(message.id);
-                    await message.react('❌');
+                    await message.react('⚠️');
                 }
             }
             return;
@@ -370,7 +370,7 @@ function setupBotEvents(instance) {
             catch (err) {
                 console.error(`[${config.name}] Error handling message ${msg.id}:`, err);
                 try {
-                    await msg.react('❌');
+                    await msg.react('⚠️');
                 }
                 catch {
                     // ignore
