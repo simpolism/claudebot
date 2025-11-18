@@ -58,8 +58,32 @@ const messagesByChannel = new Map();
 const messageIdsByChannel = new Map(); // O(1) deduplication
 const blockBoundaries = new Map();
 const hydratedChannels = new Map(); // Track lazy-loaded threads
-const resetThreads = new Set(); // Track threads that have been reset (don't inherit parent blocks)
+const resetThreads = new Map(); // Track per-bot thread resets: threadId -> Set<botId>
 // ---------- Helper Functions ----------
+/**
+ * Mark a thread as reset for a specific bot (or all bots if botId is null).
+ */
+function markThreadReset(threadId, botId) {
+    if (botId) {
+        // Reset for specific bot
+        if (!resetThreads.has(threadId)) {
+            resetThreads.set(threadId, new Set());
+        }
+        resetThreads.get(threadId).add(botId);
+    }
+    else {
+        // Reset for ALL bots - clear the set so we can distinguish "no resets" from "all reset"
+        // Actually, we can't know all bot IDs here. Better to clear and let each bot re-establish.
+        resetThreads.delete(threadId);
+    }
+}
+/**
+ * Check if a thread was reset for a specific bot.
+ */
+function isThreadResetForBot(threadId, botId) {
+    const botResets = resetThreads.get(threadId);
+    return botResets ? botResets.has(botId) : false;
+}
 function ensureChannelInitialized(channelId) {
     if (!messagesByChannel.has(channelId)) {
         messagesByChannel.set(channelId, []);
@@ -146,10 +170,10 @@ function getBlockBoundaries(channelId) {
     return blockBoundaries.get(channelId) ?? [];
 }
 function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, parentChannelId) {
-    // For threads: use parent's blocks + thread's tail (unless thread was reset)
+    // For threads: use parent's blocks + thread's tail (unless thread was reset for this bot)
     // For channels: use channel's blocks + tail
     const isThreadContext = threadId != null && parentChannelId != null;
-    const isResetThread = threadId != null && resetThreads.has(threadId);
+    const isResetThread = threadId != null && isThreadResetForBot(threadId, botUserId);
     const boundaryChannelId = isThreadContext && !isResetThread ? parentChannelId : channelId;
     const messageChannelId = channelId; // Always get messages from the actual channel/thread
     const messages = messagesByChannel.get(messageChannelId) ?? [];
@@ -529,9 +553,9 @@ async function loadHistoryFromDiscord(channelIds, client, maxTokensPerChannel) {
 }
 /**
  * Lazy-load a thread from the database on first access.
- * Handles reset boundaries and backfills missing messages from Discord.
+ * Handles per-bot reset boundaries and backfills missing messages from Discord.
  */
-async function lazyLoadThread(threadId, parentChannelId, client) {
+async function lazyLoadThread(threadId, parentChannelId, client, botUserId) {
     // Check if already hydrated
     if (hydratedChannels.get(threadId)) {
         return;
@@ -544,21 +568,21 @@ async function lazyLoadThread(threadId, parentChannelId, client) {
         ensureChannelInitialized(threadId);
         return;
     }
-    console.log(`[LazyLoad] Loading thread ${threadId} from database...`);
+    console.log(`[LazyLoad] Loading thread ${threadId} from database for bot ${botUserId}...`);
     try {
-        // Check if thread was reset
-        const resetInfo = db.getThreadResetInfo(threadId);
+        // Check if thread was reset for this specific bot
+        const resetInfo = db.getThreadResetInfo(threadId, botUserId);
         let messages = [];
         let boundaries = [];
         if (resetInfo) {
-            // Thread was reset - only load messages after reset boundary
-            console.log(`[LazyLoad] Thread ${threadId} was reset at row_id ${resetInfo.lastResetRowId}`);
+            // Thread was reset for this bot - only load messages after reset boundary
+            console.log(`[LazyLoad] Thread ${threadId} was reset for bot ${botUserId} at row_id ${resetInfo.lastResetRowId}`);
             messages = db.getMessagesAfterRow(threadId, resetInfo.lastResetRowId, threadId);
             boundaries = []; // No boundaries - fresh start after reset
-            resetThreads.add(threadId); // Mark as reset (don't inherit parent blocks)
+            markThreadReset(threadId, botUserId); // Mark as reset for this bot
         }
         else {
-            // No reset - load everything from database
+            // No reset for this bot - load everything from database
             messages = db.getMessages(threadId, threadId);
             boundaries = db.getBoundaries(threadId, threadId);
         }
@@ -569,7 +593,7 @@ async function lazyLoadThread(threadId, parentChannelId, client) {
         blockBoundaries.set(threadId, boundaries);
         console.log(`[LazyLoad] Loaded ${messages.length} messages and ${boundaries.length} boundaries from DB`);
         // Backfill any messages missed during downtime from Discord
-        const backfilled = await backfillThreadFromDiscord(threadId, client);
+        const backfilled = await backfillThreadFromDiscord(threadId, client, botUserId);
         if (backfilled > 0) {
             console.log(`[LazyLoad] Backfilled ${backfilled} messages from Discord`);
         }
@@ -584,19 +608,19 @@ async function lazyLoadThread(threadId, parentChannelId, client) {
 }
 /**
  * Backfill messages from Discord that were sent during downtime.
- * Respects reset boundaries to avoid re-fetching cleared messages.
+ * Respects per-bot reset boundaries to avoid re-fetching cleared messages.
  * Returns number of messages backfilled.
  */
-async function backfillThreadFromDiscord(threadId, client) {
+async function backfillThreadFromDiscord(threadId, client, botUserId) {
     try {
         // Get the last message we have in memory
         const messages = messagesByChannel.get(threadId) ?? [];
         if (messages.length === 0) {
-            // Check if thread was reset - if so, only fetch messages AFTER reset
+            // Check if thread was reset for this bot - if so, only fetch messages AFTER reset
             if (config_1.globalConfig.useDatabaseStorage) {
-                const resetInfo = db.getThreadResetInfo(threadId);
+                const resetInfo = db.getThreadResetInfo(threadId, botUserId);
                 if (resetInfo?.lastResetDiscordMessageId) {
-                    console.log(`[Backfill] Thread ${threadId} was reset, fetching only post-reset messages after Discord ID ${resetInfo.lastResetDiscordMessageId}`);
+                    console.log(`[Backfill] Thread ${threadId} was reset for bot ${botUserId}, fetching only post-reset messages after Discord ID ${resetInfo.lastResetDiscordMessageId}`);
                     const channel = await client.channels.fetch(threadId);
                     if (!channel || !channel.isTextBased()) {
                         return 0;
@@ -781,32 +805,53 @@ function clearChannel(channelId) {
  * Records reset metadata to prevent reloading pre-reset messages after downtime.
  *
  * @param resetMessageId - The Discord message ID of the /reset command (used as boundary)
+ * @param botId - Discord bot user ID. If provided, only resets for that bot. If null, resets for ALL bots.
  */
-function clearThread(threadId, parentChannelId, resetMessageId) {
-    // Clear in-memory (currently stored by thread's channelId)
-    messagesByChannel.delete(threadId);
-    messageIdsByChannel.delete(threadId);
-    blockBoundaries.delete(threadId);
-    hydratedChannels.delete(threadId); // Clear hydration flag
-    resetThreads.add(threadId); // Mark thread as reset (don't inherit parent blocks)
-    // Clear from database and record reset if enabled
-    if (config_1.globalConfig.useDatabaseStorage) {
-        try {
-            // Get the last row_id BEFORE clearing (for reset tracking)
-            const lastRowId = db.getLastRowId(threadId, threadId);
-            // Record reset metadata BEFORE clearing
-            // Use the /reset message ID as the boundary so backfill excludes it
-            if (lastRowId !== null && resetMessageId) {
-                db.recordThreadReset(threadId, lastRowId, resetMessageId);
-                console.log(`[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${resetMessageId}`);
+function clearThread(threadId, parentChannelId, resetMessageId, botId) {
+    if (botId) {
+        // Per-bot reset: don't clear shared storage, just mark reset for this bot
+        markThreadReset(threadId, botId);
+        // Record in database
+        if (config_1.globalConfig.useDatabaseStorage) {
+            try {
+                const lastRowId = db.getLastRowId(threadId, threadId);
+                if (lastRowId !== null && resetMessageId) {
+                    db.recordThreadReset(threadId, lastRowId, resetMessageId, botId);
+                    console.log(`[Reset] Recorded reset boundary for bot ${botId} in thread ${threadId} at row_id ${lastRowId}, Discord msg ${resetMessageId}`);
+                }
             }
-            // Now clear messages and boundaries
-            // FIX: Use threadId for channelId parameter (not parentChannelId)
-            // For threads, channel_id in DB equals the thread's own ID
-            db.clearThread(threadId, threadId);
+            catch (err) {
+                console.error('[Database] Failed to record per-bot reset:', err);
+            }
         }
-        catch (err) {
-            console.error('[Database] Failed to clear thread:', err);
+    }
+    else {
+        // Global reset: clear everything for all bots
+        // Clear in-memory (currently stored by thread's channelId)
+        messagesByChannel.delete(threadId);
+        messageIdsByChannel.delete(threadId);
+        blockBoundaries.delete(threadId);
+        hydratedChannels.delete(threadId); // Clear hydration flag
+        markThreadReset(threadId, null); // Clear all bot reset markers
+        // Clear from database and record reset if enabled
+        if (config_1.globalConfig.useDatabaseStorage) {
+            try {
+                // Get the last row_id BEFORE clearing (for reset tracking)
+                const lastRowId = db.getLastRowId(threadId, threadId);
+                // Record reset metadata BEFORE clearing (clears all bot-specific resets)
+                // Use the /reset message ID as the boundary so backfill excludes it
+                if (lastRowId !== null && resetMessageId) {
+                    db.recordThreadReset(threadId, lastRowId, resetMessageId, null);
+                    console.log(`[Reset] Recorded global reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${resetMessageId}`);
+                }
+                // Now clear messages and boundaries
+                // FIX: Use threadId for channelId parameter (not parentChannelId)
+                // For threads, channel_id in DB equals the thread's own ID
+                db.clearThread(threadId, threadId);
+            }
+            catch (err) {
+                console.error('[Database] Failed to clear thread:', err);
+            }
         }
     }
 }

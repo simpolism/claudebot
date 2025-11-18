@@ -30,7 +30,7 @@ export async function buildConversationContext(params: {
 
   // Lazy-load thread from database if needed
   if (isThread && threadId && parentChannelId) {
-    await lazyLoadThread(threadId, parentChannelId, client);
+    await lazyLoadThread(threadId, parentChannelId, client, botUserId);
   }
 
   const channelResult = getContext(

@@ -19,7 +19,7 @@ async function buildConversationContext(params) {
     const parentChannelId = isThread ? channel.parentId : undefined;
     // Lazy-load thread from database if needed
     if (isThread && threadId && parentChannelId) {
-        await (0, message_store_1.lazyLoadThread)(threadId, parentChannelId, client);
+        await (0, message_store_1.lazyLoadThread)(threadId, parentChannelId, client, botUserId);
     }
     const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName, threadId, parentChannelId ?? undefined);
     // Convert tail strings to SimpleMessage format

@@ -233,7 +233,7 @@ function setupBotEvents(instance: BotInstance): void {
     }
 
     // Handle /reset command (thread-only)
-    // Clears thread for ALL bots (shared storage), first bot replies
+    // Supports per-bot reset: /reset (all bots) or /reset @Bot1 @Bot2 (specific bots)
     if (isResetCommand) {
       // Only handle in-scope messages
       if (!isInScope(message)) {
@@ -268,16 +268,35 @@ function setupBotEvents(instance: BotInstance): void {
         return;
       }
 
-      try {
-        // ALL bots clear the thread (shared storage)
-        clearThread(threadId, parentChannelId, message.id);
+      // Check if specific bots were mentioned
+      const botMentions = message.mentions.users.filter((user) => user.bot);
+      const isGlobalReset = botMentions.size === 0;
+      const shouldResetThisBot =
+        isGlobalReset || (client.user && message.mentions.has(client.user));
 
-        // Only first bot to process sends confirmation
-        if (!repliedResetMessages.has(message.id)) {
-          repliedResetMessages.add(message.id);
-          await message.reply('✅ Thread history cleared. Starting fresh conversation! 🔄');
+      try {
+        if (shouldResetThisBot) {
+          // Determine botId: null for global reset, client.user.id for per-bot reset
+          const botId = isGlobalReset ? null : client.user?.id;
+
+          clearThread(threadId, parentChannelId, message.id, botId);
+
+          // Only first bot to process (for global) or first mentioned bot sends confirmation
+          if (!repliedResetMessages.has(message.id)) {
+            repliedResetMessages.add(message.id);
+            const resetScope = isGlobalReset
+              ? 'all bots'
+              : botMentions.size === 1
+                ? 'this bot'
+                : 'mentioned bots';
+            await message.reply(
+              `✅ Thread history cleared for ${resetScope}. Starting fresh conversation! 🔄`,
+            );
+          }
+
+          const resetType = isGlobalReset ? 'global' : 'per-bot';
+          console.log(`[${config.name}] Cleared thread history for ${threadId} (${resetType})`);
         }
-        console.log(`[${config.name}] Cleared thread history for ${threadId}`);
       } catch (err) {
         console.error(`[${config.name}] Failed to clear thread:`, err);
         // Only first bot replies with error

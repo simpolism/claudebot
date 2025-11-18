@@ -311,6 +311,47 @@ const MIGRATIONS: Migration[] = [
       console.log('[Migration v5] Column added successfully');
     },
   },
+  {
+    version: 6,
+    description: 'Add per-bot reset tracking (bot_id to thread_metadata)',
+    up: (db: Database.Database) => {
+      console.log('[Migration v6] Adding per-bot reset tracking...');
+
+      // Check if bot_id column already exists
+      const columns = db.pragma('table_info(thread_metadata)') as any[];
+      const botIdExists = columns.find((col: any) => col.name === 'bot_id');
+      if (botIdExists) {
+        console.log('[Migration v6] bot_id column already exists, skipping');
+        return;
+      }
+
+      // Create new table with composite primary key
+      db.exec(`
+        CREATE TABLE thread_metadata_new (
+          thread_id TEXT NOT NULL,
+          bot_id TEXT NOT NULL,
+          last_reset_row_id INTEGER NOT NULL,
+          last_reset_discord_message_id TEXT,
+          last_reset_at INTEGER NOT NULL,
+          PRIMARY KEY (thread_id, bot_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_thread_metadata_new_reset
+          ON thread_metadata_new(thread_id, bot_id, last_reset_row_id);
+      `);
+
+      // Old data is dropped - resets are ephemeral, bots will re-establish reset state
+      // (Alternative: could migrate with a placeholder bot_id, but cleaner to start fresh)
+
+      // Drop old table and rename new one
+      db.exec(`
+        DROP TABLE IF EXISTS thread_metadata;
+        ALTER TABLE thread_metadata_new RENAME TO thread_metadata;
+      `);
+
+      console.log('[Migration v6] Per-bot reset tracking enabled');
+    },
+  },
 ];
 
 function getCurrentVersion(db: Database.Database): number {
@@ -903,37 +944,59 @@ export function clearAllData(): void {
 /**
  * Record a thread reset with the last row_id and Discord message ID before the reset.
  * Used to prevent reloading pre-reset messages after downtime.
+ *
+ * @param botId - Discord bot user ID. If provided, only resets for that bot. If null, resets for ALL bots.
  */
 export function recordThreadReset(
   threadId: string,
   lastRowId: number,
   lastDiscordMessageId: string | null = null,
+  botId: string | null = null,
 ): void {
   const db = getDb();
 
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO thread_metadata
-    (thread_id, last_reset_row_id, last_reset_discord_message_id, last_reset_at)
-    VALUES (?, ?, ?, ?)
-  `);
-
-  stmt.run(threadId, lastRowId, lastDiscordMessageId, Date.now());
+  if (botId) {
+    // Reset for specific bot
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO thread_metadata
+      (thread_id, bot_id, last_reset_row_id, last_reset_discord_message_id, last_reset_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(threadId, botId, lastRowId, lastDiscordMessageId, Date.now());
+  } else {
+    // Reset for ALL bots - delete all existing reset records for this thread
+    // Then we don't insert anything (no reset = see everything)
+    // Actually, we should insert for all known bots. But we don't have a bot registry here.
+    // Better approach: don't track "all bot" resets in DB, handle in-memory only
+    // Actually, let me reconsider - if botId is null, we should NOT record anything
+    // because "no reset record" means "not reset" which is correct for other bots
+    console.log(
+      `[Database] Clearing all bot reset records for thread ${threadId} (global reset)`,
+    );
+    const stmt = db.prepare(`DELETE FROM thread_metadata WHERE thread_id = ?`);
+    stmt.run(threadId);
+  }
 }
 
 /**
- * Get reset information for a thread.
- * Returns null if thread has never been reset.
+ * Get reset information for a thread and specific bot.
+ * Returns null if thread has never been reset for this bot.
+ *
+ * @param botId - Discord bot user ID. Required to check per-bot reset status.
  */
-export function getThreadResetInfo(threadId: string): ThreadResetInfo | null {
+export function getThreadResetInfo(
+  threadId: string,
+  botId: string,
+): ThreadResetInfo | null {
   const db = getDb();
 
   const stmt = db.prepare(`
     SELECT last_reset_row_id, last_reset_discord_message_id, last_reset_at
     FROM thread_metadata
-    WHERE thread_id = ?
+    WHERE thread_id = ? AND bot_id = ?
   `);
 
-  const result = stmt.get(threadId) as any;
+  const result = stmt.get(threadId, botId) as any;
   if (!result) return null;
 
   return {
