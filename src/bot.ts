@@ -233,15 +233,20 @@ function setupBotEvents(instance: BotInstance): void {
     }
 
     // Handle /reset command (thread-only)
+    // Clears thread for ALL bots (shared storage), first bot replies
     if (isResetCommand) {
-      // Check if bot was mentioned or if it should respond
-      // Use same logic as shouldRespond to determine which bot handles it
-      if (!shouldRespond(message, client)) {
-        return; // This bot wasn't mentioned/shouldn't respond
+      // Only handle in-scope messages
+      if (!isInScope(message)) {
+        return;
+      }
+
+      // Ignore bot's own messages
+      if (client.user && message.author.id === client.user.id) {
+        return;
       }
 
       if (!message.channel.isThread()) {
-        // Only reply if no other bot has replied yet
+        // Only first bot replies
         if (!repliedResetMessages.has(message.id)) {
           repliedResetMessages.add(message.id);
           await message.reply(
@@ -255,7 +260,7 @@ function setupBotEvents(instance: BotInstance): void {
       const parentChannelId = message.channel.parentId;
 
       if (!parentChannelId) {
-        // Only reply if no other bot has replied yet
+        // Only first bot replies
         if (!repliedResetMessages.has(message.id)) {
           repliedResetMessages.add(message.id);
           await message.reply('❌ Could not determine parent channel for this thread.');
@@ -264,9 +269,10 @@ function setupBotEvents(instance: BotInstance): void {
       }
 
       try {
-        // Pass the /reset message ID to clearThread so it can set the correct boundary
+        // ALL bots clear the thread (shared storage)
         clearThread(threadId, parentChannelId, message.id);
-        // Only reply if no other bot has replied yet
+
+        // Only first bot to process sends confirmation
         if (!repliedResetMessages.has(message.id)) {
           repliedResetMessages.add(message.id);
           await message.reply('✅ Thread history cleared. Starting fresh conversation! 🔄');
@@ -274,7 +280,7 @@ function setupBotEvents(instance: BotInstance): void {
         console.log(`[${config.name}] Cleared thread history for ${threadId}`);
       } catch (err) {
         console.error(`[${config.name}] Failed to clear thread:`, err);
-        // Only reply if no other bot has replied yet
+        // Only first bot replies with error
         if (!repliedResetMessages.has(message.id)) {
           repliedResetMessages.add(message.id);
           await message.reply('❌ Failed to clear thread history. Please try again.');
