@@ -46,6 +46,9 @@ const processingChannels = new Set<string>();
 // Queue for pending messages when channel is busy
 const messageQueues = new Map<string, Message[]>();
 
+// Track reset messages that have been replied to (to prevent duplicate replies)
+const repliedResetMessages = new Set<string>();
+
 const allowedRootChannels = new Set(globalConfig.mainChannelIds);
 
 function isChannelAllowed(channelId: string | null | undefined): boolean {
@@ -213,8 +216,13 @@ function setupBotEvents(instance: BotInstance): void {
   });
 
   client.on(Events.MessageCreate, async (message) => {
+    // Check for /reset command first (before appending to history)
+    const content = message.content.trim();
+    const isResetCommand = content === '/reset' || content.startsWith('/reset ');
+
     // ALWAYS append messages to in-memory store (for all in-scope messages)
-    if (isInScope(message)) {
+    // EXCEPT /reset commands (meta-commands shouldn't be in conversation history)
+    if (isInScope(message) && !isResetCommand) {
       appendMessage(message);
 
       // Track bot-to-bot exchanges: reset counter on human messages
@@ -226,12 +234,21 @@ function setupBotEvents(instance: BotInstance): void {
     }
 
     // Handle /reset command (thread-only)
-    const content = message.content.trim();
-    if (content === '/reset' || content.startsWith('/reset ')) {
+    if (isResetCommand) {
+      // Check if bot was mentioned or if it should respond
+      // Use same logic as shouldRespond to determine which bot handles it
+      if (!shouldRespond(message, client)) {
+        return; // This bot wasn't mentioned/shouldn't respond
+      }
+
       if (!message.channel.isThread()) {
-        await message.reply(
-          '❌ The `/reset` command only works in threads. Use threads to isolate conversations.',
-        );
+        // Only reply if no other bot has replied yet
+        if (!repliedResetMessages.has(message.id)) {
+          repliedResetMessages.add(message.id);
+          await message.reply(
+            '❌ The `/reset` command only works in threads. Use threads to isolate conversations.',
+          );
+        }
         return;
       }
 
@@ -239,17 +256,29 @@ function setupBotEvents(instance: BotInstance): void {
       const parentChannelId = message.channel.parentId;
 
       if (!parentChannelId) {
-        await message.reply('❌ Could not determine parent channel for this thread.');
+        // Only reply if no other bot has replied yet
+        if (!repliedResetMessages.has(message.id)) {
+          repliedResetMessages.add(message.id);
+          await message.reply('❌ Could not determine parent channel for this thread.');
+        }
         return;
       }
 
       try {
         clearThread(threadId, parentChannelId);
-        await message.reply('✅ Thread history cleared. Starting fresh conversation! 🔄');
+        // Only reply if no other bot has replied yet
+        if (!repliedResetMessages.has(message.id)) {
+          repliedResetMessages.add(message.id);
+          await message.reply('✅ Thread history cleared. Starting fresh conversation! 🔄');
+        }
         console.log(`[${config.name}] Cleared thread history for ${threadId}`);
       } catch (err) {
         console.error(`[${config.name}] Failed to clear thread:`, err);
-        await message.reply('❌ Failed to clear thread history. Please try again.');
+        // Only reply if no other bot has replied yet
+        if (!repliedResetMessages.has(message.id)) {
+          repliedResetMessages.add(message.id);
+          await message.reply('❌ Failed to clear thread history. Please try again.');
+        }
       }
       return;
     }

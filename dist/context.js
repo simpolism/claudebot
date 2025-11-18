@@ -27,7 +27,11 @@ async function buildConversationContext(params) {
         role: content.startsWith(`${botDisplayName}:`) ? 'assistant' : 'user',
         content,
     }));
-    const contextType = isThread ? `Thread (with parent blocks)` : 'Channel';
+    // Determine context type for logging
+    let contextType = 'Channel';
+    if (isThread) {
+        contextType = channelResult.blocks.length > 0 ? 'Thread (with parent blocks)' : 'Thread (reset)';
+    }
     console.log(`[${botDisplayName}] ${contextType} conversation: ${channelResult.blocks.length} cached blocks (~${channelResult.totalTokens} tokens) + ${tail.length} tail messages`);
     return {
         cachedBlocks: channelResult.blocks,

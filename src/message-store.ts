@@ -40,6 +40,7 @@ const messagesByChannel = new Map<string, StoredMessage[]>();
 const messageIdsByChannel = new Map<string, Set<string>>(); // O(1) deduplication
 const blockBoundaries = new Map<string, BlockBoundary[]>();
 const hydratedChannels = new Map<string, boolean>(); // Track lazy-loaded threads
+const resetThreads = new Set<string>(); // Track threads that have been reset (don't inherit parent blocks)
 
 // ---------- Helper Functions ----------
 
@@ -163,11 +164,12 @@ export function getContext(
   threadId?: string | null,
   parentChannelId?: string,
 ): ContextResult {
-  // For threads: use parent's blocks + thread's tail
+  // For threads: use parent's blocks + thread's tail (unless thread was reset)
   // For channels: use channel's blocks + tail
   const isThreadContext = threadId != null && parentChannelId != null;
+  const isResetThread = threadId != null && resetThreads.has(threadId);
 
-  const boundaryChannelId = isThreadContext ? parentChannelId : channelId;
+  const boundaryChannelId = isThreadContext && !isResetThread ? parentChannelId : channelId;
   const messageChannelId = channelId; // Always get messages from the actual channel/thread
 
   const messages = messagesByChannel.get(messageChannelId) ?? [];
@@ -182,10 +184,10 @@ export function getContext(
   const currentBoundaries = blockBoundaries.get(boundaryChannelId) ?? [];
 
   // Build frozen blocks with their stored token counts
-  // For threads: these are the parent's cached blocks
+  // For threads: these are the parent's cached blocks (unless reset)
   const blockData: Array<{ text: string; tokens: number }> = [];
 
-  if (isThreadContext) {
+  if (isThreadContext && !isResetThread) {
     // For threads: Get parent channel messages to build parent blocks
     const parentMessages = messagesByChannel.get(parentChannelId) ?? [];
     for (const boundary of currentBoundaries) {
@@ -198,7 +200,7 @@ export function getContext(
       blockData.push({ text: blockText, tokens: boundary.tokenCount });
     }
   } else {
-    // For regular channels: Use channel's own blocks
+    // For regular channels or reset threads: Use channel's own blocks
     for (const boundary of currentBoundaries) {
       const blockMessages = getMessagesInRange(
         currentMessages,
@@ -702,6 +704,7 @@ export async function lazyLoadThread(
       );
       messages = db.getMessagesAfterRow(threadId, resetInfo.lastResetRowId, threadId);
       boundaries = []; // No boundaries - fresh start after reset
+      resetThreads.add(threadId); // Mark as reset (don't inherit parent blocks)
     } else {
       // No reset - load everything from database
       messages = db.getMessages(threadId, threadId);
@@ -1010,6 +1013,7 @@ export function clearThread(threadId: string, parentChannelId: string): void {
   messageIdsByChannel.delete(threadId);
   blockBoundaries.delete(threadId);
   hydratedChannels.delete(threadId); // Clear hydration flag
+  resetThreads.add(threadId); // Mark thread as reset (don't inherit parent blocks)
 
   // Clear from database and record reset if enabled
   if (globalConfig.useDatabaseStorage) {
