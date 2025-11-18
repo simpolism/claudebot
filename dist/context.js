@@ -7,19 +7,28 @@ const message_store_1 = require("./message-store");
 Object.defineProperty(exports, "appendMessage", { enumerable: true, get: function () { return message_store_1.appendMessage; } });
 Object.defineProperty(exports, "getBlockBoundaries", { enumerable: true, get: function () { return message_store_1.getBlockBoundaries; } });
 // ---------- Context Building ----------
-function buildConversationContext(params) {
+async function buildConversationContext(params) {
     const { channel, maxContextTokens, client, botDisplayName } = params;
     if (!channel.isTextBased() || !client.user) {
         return { cachedBlocks: [], tail: [] };
     }
     const botUserId = client.user.id;
-    const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName);
+    // Detect if this is a thread
+    const isThread = channel.isThread();
+    const threadId = isThread ? channel.id : null;
+    const parentChannelId = isThread ? channel.parentId : undefined;
+    // Lazy-load thread from database if needed
+    if (isThread && threadId && parentChannelId) {
+        await (0, message_store_1.lazyLoadThread)(threadId, parentChannelId, client);
+    }
+    const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName, threadId, parentChannelId ?? undefined);
     // Convert tail strings to SimpleMessage format
     const tail = channelResult.tail.map((content) => ({
         role: content.startsWith(`${botDisplayName}:`) ? 'assistant' : 'user',
         content,
     }));
-    console.log(`[${botDisplayName}] Channel conversation: ${channelResult.blocks.length} cached blocks (~${channelResult.totalTokens} tokens) + ${tail.length} tail messages`);
+    const contextType = isThread ? `Thread (with parent blocks)` : 'Channel';
+    console.log(`[${botDisplayName}] ${contextType} conversation: ${channelResult.blocks.length} cached blocks (~${channelResult.totalTokens} tokens) + ${tail.length} tail messages`);
     return {
         cachedBlocks: channelResult.blocks,
         tail,

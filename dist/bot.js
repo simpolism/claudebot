@@ -9,6 +9,7 @@ const message_store_1 = require("./message-store");
 const context_1 = require("./context");
 const discord_utils_1 = require("./discord-utils");
 const debug_server_1 = require("./debug-server");
+const database_1 = require("./database");
 // Export bot instances for debug server access
 exports.botInstances = [];
 // ---------- Bot-to-Bot Exchange Tracking ----------
@@ -30,7 +31,12 @@ function isChannelAllowed(channelId) {
 }
 // ---------- Utility Functions ----------
 function isInScope(message) {
-    // Only allow exact channel matches (no threads)
+    // For threads, check if the parent channel is allowed
+    // For regular channels, check the channel itself
+    if (message.channel.isThread()) {
+        const parentId = message.channel.parentId;
+        return isChannelAllowed(parentId);
+    }
     return isChannelAllowed(message.channel.id);
 }
 function shouldRespond(message, client) {
@@ -156,6 +162,30 @@ function setupBotEvents(instance) {
             }
             // Note: counter is incremented when bot RESPONDS to another bot, not on every bot message
         }
+        // Handle /reset command (thread-only)
+        const content = message.content.trim();
+        if (content === '/reset' || content.startsWith('/reset ')) {
+            if (!message.channel.isThread()) {
+                await message.reply('❌ The `/reset` command only works in threads. Use threads to isolate conversations.');
+                return;
+            }
+            const threadId = message.channel.id;
+            const parentChannelId = message.channel.parentId;
+            if (!parentChannelId) {
+                await message.reply('❌ Could not determine parent channel for this thread.');
+                return;
+            }
+            try {
+                (0, message_store_1.clearThread)(threadId, parentChannelId);
+                await message.reply('✅ Thread history cleared. Starting fresh conversation! 🔄');
+                console.log(`[${config.name}] Cleared thread history for ${threadId}`);
+            }
+            catch (err) {
+                console.error(`[${config.name}] Failed to clear thread:`, err);
+                await message.reply('❌ Failed to clear thread history. Please try again.');
+            }
+            return;
+        }
         if (!shouldRespond(message, client))
             return;
         const channelId = message.channel.id;
@@ -178,7 +208,7 @@ function setupBotEvents(instance) {
             console.log(`[${config.name}] Processing mention ${msg.id} in ${channelId} at ${new Date(receiveTime).toISOString()}`);
             try {
                 const contextStart = Date.now();
-                const conversationData = (0, context_1.buildConversationContext)({
+                const conversationData = await (0, context_1.buildConversationContext)({
                     channel: msg.channel,
                     maxContextTokens: resolved.maxContextTokens,
                     client,
@@ -266,9 +296,15 @@ function setupBotEvents(instance) {
                     if (!content) {
                         content = '(empty message)';
                     }
+                    // Detect if this is a thread message
+                    const isThread = sentMsg.channel.isThread();
+                    const threadId = isThread ? sentMsg.channel.id : null;
+                    const parentChannelId = isThread ? (sentMsg.channel.parentId ?? sentMsg.channel.id) : sentMsg.channel.id;
                     const stored = {
                         id: sentMsg.id,
                         channelId: sentMsg.channel.id,
+                        threadId,
+                        parentChannelId,
                         authorId: sentMsg.author.id,
                         authorName: botDisplayName, // Use canonical name for consistency
                         content,
@@ -318,6 +354,13 @@ function setupBotEvents(instance) {
 async function main() {
     // Start debug server for inspecting in-memory state
     (0, debug_server_1.startDebugServer)();
+    // Initialize database if feature flag is enabled
+    if (config_1.globalConfig.useDatabaseStorage) {
+        console.log('[Database] Initializing SQLite storage (USE_DATABASE_STORAGE=true)');
+        (0, database_1.initializeDatabase)();
+        const stats = (0, database_1.getDatabaseStats)();
+        console.log('[Database] Current state:', stats);
+    }
     // Load block boundaries from disk (for Anthropic cache consistency)
     (0, message_store_1.loadBoundariesFromDisk)();
     console.log('Starting multi-bot system with configuration:', {
@@ -373,4 +416,19 @@ async function main() {
 main().catch((err) => {
     console.error('Fatal error:', err);
     process.exit(1);
+});
+// Graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\nReceived SIGINT, shutting down gracefully...');
+    if (config_1.globalConfig.useDatabaseStorage) {
+        (0, database_1.closeDatabase)();
+    }
+    process.exit(0);
+});
+process.on('SIGTERM', () => {
+    console.log('\nReceived SIGTERM, shutting down gracefully...');
+    if (config_1.globalConfig.useDatabaseStorage) {
+        (0, database_1.closeDatabase)();
+    }
+    process.exit(0);
 });

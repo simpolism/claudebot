@@ -67,6 +67,7 @@ export const globalConfig = {
   temperature: parseFloat(process.env.TEMPERATURE || '1'),
   approxCharsPerToken: parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4'),
   discordMessageLimit: 2000,
+  useDatabaseStorage: process.env.USE_DATABASE_STORAGE === 'true', // Feature flag for SQLite storage
 };
 
 // Load bot configurations from JSON file
@@ -89,8 +90,12 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       model: jsonConfig.model,
       supportsImageBlocks: jsonConfig.supportsImageBlocks,
       openaiBaseUrl: jsonConfig.openaiBaseUrl,
-      openaiApiKey: jsonConfig.openaiApiKeyEnv ? process.env[jsonConfig.openaiApiKeyEnv] || '' : undefined,
-      geminiApiKey: jsonConfig.geminiApiKeyEnv ? process.env[jsonConfig.geminiApiKeyEnv] || '' : undefined,
+      openaiApiKey: jsonConfig.openaiApiKeyEnv
+        ? process.env[jsonConfig.openaiApiKeyEnv] || ''
+        : undefined,
+      geminiApiKey: jsonConfig.geminiApiKeyEnv
+        ? process.env[jsonConfig.geminiApiKeyEnv] || ''
+        : undefined,
       geminiOutputMode: jsonConfig.geminiOutputMode,
       maxContextTokens: jsonConfig.maxContextTokens,
       maxTokens: jsonConfig.maxTokens,
@@ -148,6 +153,8 @@ export function getMaxBotContextTokens(): number {
     return globalConfig.maxContextTokens;
   }
   return Math.max(
-    ...activeBotConfigs.map((config) => config.maxContextTokens ?? globalConfig.maxContextTokens),
+    ...activeBotConfigs.map(
+      (config) => config.maxContextTokens ?? globalConfig.maxContextTokens,
+    ),
   );
 }

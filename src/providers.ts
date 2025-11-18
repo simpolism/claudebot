@@ -351,10 +351,16 @@ class GeminiProvider implements AIProvider {
 
     // Configure response modalities based on output mode
     const responseModalities: Array<'Text' | 'Image'> =
-      this.outputMode === 'image' ? ['Image'] : this.outputMode === 'text' ? ['Text'] : ['Text', 'Image'];
+      this.outputMode === 'image'
+        ? ['Image']
+        : this.outputMode === 'text'
+          ? ['Text']
+          : ['Text', 'Image'];
 
     // Build interleaved content parts with images inline
-    const contentParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+    const contentParts: Array<
+      { text: string } | { inlineData: { mimeType: string; data: string } }
+    > = [];
 
     // Split transcript on image markers, keeping the markers
     const imagePattern = /(!\[image\]\([^\)]+\))/g;
@@ -373,7 +379,9 @@ class GeminiProvider implements AIProvider {
     const imagesToFetch = new Set(imageMarkerIndices.slice(-MAX_HISTORICAL_IMAGES));
     const skippedCount = imageMarkerIndices.length - imagesToFetch.size;
     if (skippedCount > 0) {
-      console.log(`[GeminiProvider] Skipping ${skippedCount} older images, fetching last ${imagesToFetch.size}`);
+      console.log(
+        `[GeminiProvider] Skipping ${skippedCount} older images, fetching last ${imagesToFetch.size}`,
+      );
     }
 
     for (let i = 0; i < segments.length; i++) {
@@ -467,7 +475,9 @@ class GeminiProvider implements AIProvider {
       if (part.inlineData) {
         // Convert base64 to Buffer
         const dataLength = part.inlineData.data?.length || 0;
-        console.log(`[GeminiProvider] Found image part: ${dataLength} base64 chars, mime: ${part.inlineData.mimeType}`);
+        console.log(
+          `[GeminiProvider] Found image part: ${dataLength} base64 chars, mime: ${part.inlineData.mimeType}`,
+        );
         imageData = Buffer.from(part.inlineData.data as string, 'base64');
       }
     }

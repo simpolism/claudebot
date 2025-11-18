@@ -78,8 +78,14 @@ afterEach(() => {
 describe('message-store', () => {
   it('appends messages to in-memory storage', () => {
     const store = getStoreModule();
-    const msg1 = createMockDiscordMessage({ id: '1', content: 'Hello', authorId: 'alice' }, 'chan');
-    const msg2 = createMockDiscordMessage({ id: '2', content: 'World', authorId: 'bob' }, 'chan');
+    const msg1 = createMockDiscordMessage(
+      { id: '1', content: 'Hello', authorId: 'alice' },
+      'chan',
+    );
+    const msg2 = createMockDiscordMessage(
+      { id: '2', content: 'World', authorId: 'bob' },
+      'chan',
+    );
 
     store.appendMessage(msg1);
     store.appendMessage(msg2);
@@ -141,7 +147,11 @@ describe('message-store', () => {
     // Add 10 messages with longer content
     for (let i = 1; i <= 10; i++) {
       const msg = createMockDiscordMessage(
-        { id: String(i), content: `This is a longer message number ${i} with more content`, authorId: 'alice' },
+        {
+          id: String(i),
+          content: `This is a longer message number ${i} with more content`,
+          authorId: 'alice',
+        },
         channelId,
       );
       store.appendMessage(msg);
@@ -160,7 +170,7 @@ describe('message-store', () => {
 });
 
 describe('buildConversationContext', () => {
-  it('builds context from in-memory messages', () => {
+  it('builds context from in-memory messages', async () => {
     const store = getStoreModule();
     const context = getContextModule();
 
@@ -177,7 +187,7 @@ describe('buildConversationContext', () => {
     store.appendMessage(msg1);
     store.appendMessage(msg2);
 
-    const result = context.buildConversationContext({
+    const result = await context.buildConversationContext({
       channel: baseChannel({ id: channelId }),
       maxContextTokens: 10000,
       client: fakeClient,
@@ -189,7 +199,7 @@ describe('buildConversationContext', () => {
     expect(result.tail[1]?.content).toContain('bob: Hello from bob');
   });
 
-  it('returns empty context for non-text channel', () => {
+  it('returns empty context for non-text channel', async () => {
     const context = getContextModule();
 
     const nonTextChannel = {
@@ -197,7 +207,7 @@ describe('buildConversationContext', () => {
       isTextBased: () => false,
     } as unknown as Message['channel'];
 
-    const result = context.buildConversationContext({
+    const result = await context.buildConversationContext({
       channel: nonTextChannel,
       maxContextTokens: 10000,
       client: fakeClient,
@@ -208,7 +218,7 @@ describe('buildConversationContext', () => {
     expect(result.tail).toEqual([]);
   });
 
-  it('assigns correct role based on bot authorship', () => {
+  it('assigns correct role based on bot authorship', async () => {
     const store = getStoreModule();
     const context = getContextModule();
 
@@ -228,7 +238,7 @@ describe('buildConversationContext', () => {
     );
     store.appendMessage(botMsg);
 
-    const result = context.buildConversationContext({
+    const result = await context.buildConversationContext({
       channel: baseChannel({ id: channelId }),
       maxContextTokens: 10000,
       client: fakeClient,
