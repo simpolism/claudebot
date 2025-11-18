@@ -46,8 +46,8 @@ const processingChannels = new Set<string>();
 // Queue for pending messages when channel is busy
 const messageQueues = new Map<string, Message[]>();
 
-// Track reset messages that have been replied to (to prevent duplicate replies)
-const repliedResetMessages = new Set<string>();
+// Track reset messages that have been reacted to (to prevent duplicate reactions)
+const reactedResetMessages = new Set<string>();
 
 const allowedRootChannels = new Set(globalConfig.mainChannelIds);
 
@@ -246,12 +246,10 @@ function setupBotEvents(instance: BotInstance): void {
       }
 
       if (!message.channel.isThread()) {
-        // Only first bot replies
-        if (!repliedResetMessages.has(message.id)) {
-          repliedResetMessages.add(message.id);
-          await message.reply(
-            '❌ The `/reset` command only works in threads. Use threads to isolate conversations.',
-          );
+        // Only first bot reacts
+        if (!reactedResetMessages.has(message.id)) {
+          reactedResetMessages.add(message.id);
+          await message.react('❌');
         }
         return;
       }
@@ -260,10 +258,10 @@ function setupBotEvents(instance: BotInstance): void {
       const parentChannelId = message.channel.parentId;
 
       if (!parentChannelId) {
-        // Only first bot replies
-        if (!repliedResetMessages.has(message.id)) {
-          repliedResetMessages.add(message.id);
-          await message.reply('❌ Could not determine parent channel for this thread.');
+        // Only first bot reacts
+        if (!reactedResetMessages.has(message.id)) {
+          reactedResetMessages.add(message.id);
+          await message.react('❌');
         }
         return;
       }
@@ -281,17 +279,10 @@ function setupBotEvents(instance: BotInstance): void {
 
           clearThread(threadId, parentChannelId, message.id, botId);
 
-          // Only first bot to process (for global) or first mentioned bot sends confirmation
-          if (!repliedResetMessages.has(message.id)) {
-            repliedResetMessages.add(message.id);
-            const resetScope = isGlobalReset
-              ? 'all bots'
-              : botMentions.size === 1
-                ? 'this bot'
-                : 'mentioned bots';
-            await message.reply(
-              `✅ Thread history cleared for ${resetScope}. Starting fresh conversation! 🔄`,
-            );
+          // Only first bot to process (for global) or first mentioned bot reacts with success
+          if (!reactedResetMessages.has(message.id)) {
+            reactedResetMessages.add(message.id);
+            await message.react('✅');
           }
 
           const resetType = isGlobalReset ? 'global' : 'per-bot';
@@ -299,10 +290,10 @@ function setupBotEvents(instance: BotInstance): void {
         }
       } catch (err) {
         console.error(`[${config.name}] Failed to clear thread:`, err);
-        // Only first bot replies with error
-        if (!repliedResetMessages.has(message.id)) {
-          repliedResetMessages.add(message.id);
-          await message.reply('❌ Failed to clear thread history. Please try again.');
+        // Only first bot reacts with error
+        if (!reactedResetMessages.has(message.id)) {
+          reactedResetMessages.add(message.id);
+          await message.react('❌');
         }
       }
       return;
@@ -489,7 +480,7 @@ function setupBotEvents(instance: BotInstance): void {
       } catch (err) {
         console.error(`[${config.name}] Error handling message ${msg.id}:`, err);
         try {
-          await msg.reply('Sorry, I hit an error. Check the bot logs.');
+          await msg.react('❌');
         } catch {
           // ignore
         }
