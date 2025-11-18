@@ -684,6 +684,7 @@ export async function lazyLoadThread(
 
 /**
  * Backfill messages from Discord that were sent during downtime.
+ * Respects reset boundaries to avoid re-fetching cleared messages.
  * Returns number of messages backfilled.
  */
 async function backfillThreadFromDiscord(
@@ -693,8 +694,57 @@ async function backfillThreadFromDiscord(
   try {
     // Get the last message we have in memory
     const messages = messagesByChannel.get(threadId) ?? [];
+
     if (messages.length === 0) {
-      // No messages in DB - need to fetch full history
+      // Check if thread was reset - if so, only fetch messages AFTER reset
+      if (globalConfig.useDatabaseStorage) {
+        const resetInfo = db.getThreadResetInfo(threadId);
+        if (resetInfo?.lastResetDiscordMessageId) {
+          console.log(
+            `[Backfill] Thread ${threadId} was reset, fetching only post-reset messages after Discord ID ${resetInfo.lastResetDiscordMessageId}`
+          );
+
+          const channel = await client.channels.fetch(threadId);
+          if (!channel || !channel.isTextBased()) {
+            return 0;
+          }
+
+          // Fetch messages AFTER the reset boundary
+          const newMessages: StoredMessage[] = [];
+          let afterCursor: string = resetInfo.lastResetDiscordMessageId;
+
+          while (true) {
+            const fetched = await channel.messages.fetch({
+              limit: 100,
+              after: afterCursor,
+            });
+
+            if (fetched.size === 0) break;
+
+            const sorted = [...fetched.values()].sort((a, b) =>
+              BigInt(a.id) < BigInt(b.id) ? -1 : 1,
+            );
+
+            for (const msg of sorted) {
+              const stored = messageToStored(msg);
+              newMessages.push(stored);
+              afterCursor = msg.id;
+            }
+
+            if (fetched.size < 100) break;
+          }
+
+          // Store post-reset messages
+          for (const msg of newMessages) {
+            appendStoredMessage(msg);
+          }
+
+          console.log(`[Backfill] Fetched ${newMessages.length} post-reset messages`);
+          return newMessages.length;
+        }
+      }
+
+      // No reset - fetch full history (new thread)
       console.log(`[Backfill] Thread ${threadId} has no messages, fetching full history from Discord`);
       const channel = await client.channels.fetch(threadId);
       if (!channel || !channel.isTextBased()) {
@@ -892,6 +942,14 @@ export function clearChannel(channelId: string): void {
  * Records reset metadata to prevent reloading pre-reset messages after downtime.
  */
 export function clearThread(threadId: string, parentChannelId: string): void {
+  // Get last message info BEFORE clearing (for reset tracking)
+  let lastDiscordMessageId: string | null = null;
+  const messages = messagesByChannel.get(threadId);
+  if (messages && messages.length > 0) {
+    const lastMessage = messages[messages.length - 1];
+    lastDiscordMessageId = lastMessage?.id ?? null;
+  }
+
   // Clear in-memory (currently stored by thread's channelId)
   messagesByChannel.delete(threadId);
   messageIdsByChannel.delete(threadId);
@@ -904,10 +962,12 @@ export function clearThread(threadId: string, parentChannelId: string): void {
       // Get the last row_id BEFORE clearing (for reset tracking)
       const lastRowId = db.getLastRowId(threadId, threadId);
 
-      // Record reset metadata BEFORE clearing (so foreign key exists)
+      // Record reset metadata BEFORE clearing (with both row_id and Discord message ID)
       if (lastRowId !== null) {
-        db.recordThreadReset(threadId, lastRowId);
-        console.log(`[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}`);
+        db.recordThreadReset(threadId, lastRowId, lastDiscordMessageId);
+        console.log(
+          `[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${lastDiscordMessageId}`
+        );
       }
 
       // Now clear messages and boundaries

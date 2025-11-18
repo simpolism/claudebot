@@ -129,6 +129,8 @@ describe('Thread Support - Reset Functionality', () => {
     expect(resetInfo).not.toBeNull();
     expect(resetInfo?.lastResetRowId).toBeTypeOf('number');
     expect(resetInfo?.lastResetRowId).toBeGreaterThan(0);
+    expect(resetInfo?.lastResetDiscordMessageId).toBeDefined();
+    expect(resetInfo?.lastResetDiscordMessageId).toBe('1002'); // Last message before reset
   });
 
   it('should clear messages and boundaries from database', () => {
@@ -513,5 +515,103 @@ describe('Thread Support - Integration Tests', () => {
     // Verify old messages are NOT present
     const hasPreResetMessage = loadedMessages.some(m => m.content.includes('Pre-reset'));
     expect(hasPreResetMessage).toBe(false);
+  });
+
+  it('should NOT re-fetch pre-reset messages from Discord after downtime (P1 bug fix)', async () => {
+    const threadId = 'thread-backfill-reset-bug';
+    const parentChannelId = 'parent-999';
+
+    // Mock Discord client that returns ALL messages (simulating Discord still has pre-reset messages)
+    const mockClient = {
+      user: { id: 'bot-user', tag: 'TestBot#0000' },
+      channels: {
+        fetch: async (id: string) => {
+          return {
+            id,
+            isTextBased: () => true,
+            isThread: () => true,
+            parentId: parentChannelId,
+            messages: {
+              fetch: async (options: any) => {
+                // Simulate Discord having both pre-reset and post-reset messages
+                const allDiscordMessages = [
+                  { id: '8001', content: 'Pre-reset 1', author: { id: 'user1', username: 'Alice', globalName: 'Alice', tag: 'Alice#0000' }, createdTimestamp: Date.now(), attachments: new Map(), channel: { id: threadId, isThread: () => true, parentId: parentChannelId } },
+                  { id: '8002', content: 'Pre-reset 2', author: { id: 'user2', username: 'Bob', globalName: 'Bob', tag: 'Bob#0000' }, createdTimestamp: Date.now() + 1000, attachments: new Map(), channel: { id: threadId, isThread: () => true, parentId: parentChannelId } },
+                  { id: '8003', content: 'Post-reset 1', author: { id: 'user1', username: 'Alice', globalName: 'Alice', tag: 'Alice#0000' }, createdTimestamp: Date.now() + 2000, attachments: new Map(), channel: { id: threadId, isThread: () => true, parentId: parentChannelId } },
+                  { id: '8004', content: 'Post-reset 2', author: { id: 'user2', username: 'Bob', globalName: 'Bob', tag: 'Bob#0000' }, createdTimestamp: Date.now() + 3000, attachments: new Map(), channel: { id: threadId, isThread: () => true, parentId: parentChannelId } },
+                ];
+
+                // Filter based on "after" option (simulating Discord API)
+                const after = options?.after;
+                const filtered = after
+                  ? allDiscordMessages.filter(m => BigInt(m.id) > BigInt(after))
+                  : allDiscordMessages;
+
+                const map = new Map();
+                filtered.forEach(m => map.set(m.id, m));
+                return map;
+              },
+            },
+          } as any;
+        },
+      },
+    } as any;
+
+    // 1. Insert pre-reset messages
+    const preResetRowIds: number[] = [];
+    const preResetMessages: store.StoredMessage[] = [
+      {
+        id: '8001',
+        channelId: threadId,
+        threadId: threadId,
+        parentChannelId: parentChannelId,
+        authorId: 'user1',
+        authorName: 'Alice',
+        content: 'Pre-reset 1',
+        timestamp: Date.now(),
+      },
+      {
+        id: '8002',
+        channelId: threadId,
+        threadId: threadId,
+        parentChannelId: parentChannelId,
+        authorId: 'user2',
+        authorName: 'Bob',
+        content: 'Pre-reset 2',
+        timestamp: Date.now() + 1000,
+      },
+    ];
+
+    for (const msg of preResetMessages) {
+      const rowId = db.insertMessage({ ...msg, createdAt: Date.now() });
+      if (rowId) preResetRowIds.push(rowId);
+    }
+
+    // 2. User calls /reset - this should record Discord message ID '8002'
+    const lastPreResetRowId = Math.max(...preResetRowIds);
+    db.recordThreadReset(threadId, lastPreResetRowId, '8002'); // Record Discord ID
+    db.clearThread(threadId, threadId);
+
+    // Verify reset was recorded with Discord message ID
+    const resetInfo = db.getThreadResetInfo(threadId);
+    expect(resetInfo?.lastResetDiscordMessageId).toBe('8002');
+
+    // 3. Bot restarts (simulated by lazy load with empty DB)
+    // Messages 8003 and 8004 were sent during downtime (not in DB)
+
+    // 4. Lazy-load should only fetch post-reset messages
+    await store.lazyLoadThread(threadId, parentChannelId, mockClient);
+
+    // 5. Verify ONLY post-reset messages are loaded
+    const loadedMessages = store.getChannelMessages(threadId);
+    expect(loadedMessages).toHaveLength(2);
+    expect(loadedMessages[0]?.content).toBe('Post-reset 1');
+    expect(loadedMessages[1]?.content).toBe('Post-reset 2');
+
+    // 6. CRITICAL: Verify pre-reset messages were NOT fetched
+    const hasPreResetMessage = loadedMessages.some(m => m.content.includes('Pre-reset'));
+    expect(hasPreResetMessage).toBe(false);
+
+    console.log('✅ P1 Bug Fix Verified: Pre-reset messages were NOT re-fetched from Discord');
   });
 });

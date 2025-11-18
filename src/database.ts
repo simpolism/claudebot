@@ -48,6 +48,7 @@ export interface BlockBoundary {
 
 export interface ThreadResetInfo {
   lastResetRowId: number;
+  lastResetDiscordMessageId: string | null; // Discord message ID at reset time
   lastResetAt: number;
 }
 
@@ -282,6 +283,28 @@ const MIGRATIONS: Migration[] = [
       `);
 
       console.log('[Migration v4] thread_metadata table created');
+    },
+  },
+  {
+    version: 5,
+    description: 'Add last_reset_discord_message_id to thread_metadata',
+    up: (db: Database.Database) => {
+      console.log('[Migration v5] Adding last_reset_discord_message_id column...');
+
+      // Check if column already exists
+      const columns = db.pragma('table_info(thread_metadata)') as any[];
+      const columnExists = columns.find((col: any) => col.name === 'last_reset_discord_message_id');
+      if (columnExists) {
+        console.log('[Migration v5] Column already exists, skipping');
+        return;
+      }
+
+      // Add column
+      db.exec(`
+        ALTER TABLE thread_metadata ADD COLUMN last_reset_discord_message_id TEXT;
+      `);
+
+      console.log('[Migration v5] Column added successfully');
     },
   },
 ];
@@ -854,19 +877,23 @@ export function clearAllData(): void {
 // ============================================================================
 
 /**
- * Record a thread reset with the last row_id before the reset.
+ * Record a thread reset with the last row_id and Discord message ID before the reset.
  * Used to prevent reloading pre-reset messages after downtime.
  */
-export function recordThreadReset(threadId: string, lastRowId: number): void {
+export function recordThreadReset(
+  threadId: string,
+  lastRowId: number,
+  lastDiscordMessageId: string | null = null
+): void {
   const db = getDb();
 
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO thread_metadata
-    (thread_id, last_reset_row_id, last_reset_at)
-    VALUES (?, ?, ?)
+    (thread_id, last_reset_row_id, last_reset_discord_message_id, last_reset_at)
+    VALUES (?, ?, ?, ?)
   `);
 
-  stmt.run(threadId, lastRowId, Date.now());
+  stmt.run(threadId, lastRowId, lastDiscordMessageId, Date.now());
 }
 
 /**
@@ -877,7 +904,7 @@ export function getThreadResetInfo(threadId: string): ThreadResetInfo | null {
   const db = getDb();
 
   const stmt = db.prepare(`
-    SELECT last_reset_row_id, last_reset_at
+    SELECT last_reset_row_id, last_reset_discord_message_id, last_reset_at
     FROM thread_metadata
     WHERE thread_id = ?
   `);
@@ -887,6 +914,7 @@ export function getThreadResetInfo(threadId: string): ThreadResetInfo | null {
 
   return {
     lastResetRowId: result.last_reset_row_id,
+    lastResetDiscordMessageId: result.last_reset_discord_message_id,
     lastResetAt: result.last_reset_at,
   };
 }
