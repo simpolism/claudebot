@@ -226,9 +226,12 @@ export function getContext(
           : 0,
       );
 
+  // Filter out meta-messages (commands and system responses)
+  const filteredTailMessages = tailMessages.filter((msg) => !isMetaMessage(msg.content));
+
   const tailData: Array<{ text: string; tokens: number }> = [];
 
-  for (const msg of tailMessages) {
+  for (const msg of filteredTailMessages) {
     const formatted = formatMessage(msg, botUserId, botDisplayName);
     const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
     const tokens = estimateMessageTokens(authorName, msg.content);
@@ -360,6 +363,21 @@ function getMessagesInRange(
   return result;
 }
 
+/**
+ * Check if a message is a meta-message (command or system response) that should be
+ * filtered out of conversation context.
+ */
+function isMetaMessage(content: string): boolean {
+  const trimmed = content.trim();
+  return (
+    trimmed.startsWith('/reset') ||
+    trimmed.includes('Thread history cleared') ||
+    trimmed.includes('The `/reset` command only works in threads') ||
+    trimmed.includes('Could not determine parent channel') ||
+    trimmed.includes('Failed to clear thread history')
+  );
+}
+
 function formatMessage(
   msg: StoredMessage,
   botUserId: string,
@@ -374,7 +392,9 @@ function formatMessages(
   botUserId: string,
   botDisplayName: string,
 ): string {
-  return messages.map((m) => formatMessage(m, botUserId, botDisplayName)).join('\n');
+  // Filter out meta-messages (commands and system responses)
+  const filtered = messages.filter((m) => !isMetaMessage(m.content));
+  return filtered.map((m) => formatMessage(m, botUserId, botDisplayName)).join('\n');
 }
 
 function estimateTokens(text: string): number {
@@ -998,16 +1018,10 @@ export function clearChannel(channelId: string): void {
 /**
  * Clear a thread's history (both in-memory and database).
  * Records reset metadata to prevent reloading pre-reset messages after downtime.
+ *
+ * @param resetMessageId - The Discord message ID of the /reset command (used as boundary)
  */
-export function clearThread(threadId: string, parentChannelId: string): void {
-  // Get last message info BEFORE clearing (for reset tracking)
-  let lastDiscordMessageId: string | null = null;
-  const messages = messagesByChannel.get(threadId);
-  if (messages && messages.length > 0) {
-    const lastMessage = messages[messages.length - 1];
-    lastDiscordMessageId = lastMessage?.id ?? null;
-  }
-
+export function clearThread(threadId: string, parentChannelId: string, resetMessageId?: string): void {
   // Clear in-memory (currently stored by thread's channelId)
   messagesByChannel.delete(threadId);
   messageIdsByChannel.delete(threadId);
@@ -1021,11 +1035,12 @@ export function clearThread(threadId: string, parentChannelId: string): void {
       // Get the last row_id BEFORE clearing (for reset tracking)
       const lastRowId = db.getLastRowId(threadId, threadId);
 
-      // Record reset metadata BEFORE clearing (with both row_id and Discord message ID)
-      if (lastRowId !== null) {
-        db.recordThreadReset(threadId, lastRowId, lastDiscordMessageId);
+      // Record reset metadata BEFORE clearing
+      // Use the /reset message ID as the boundary so backfill excludes it
+      if (lastRowId !== null && resetMessageId) {
+        db.recordThreadReset(threadId, lastRowId, resetMessageId);
         console.log(
-          `[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${lastDiscordMessageId}`,
+          `[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${resetMessageId}`,
         );
       }
 
@@ -1073,6 +1088,8 @@ export function getChannelSpeakers(channelId: string, excludeBotId?: string): st
 
   for (const msg of messages) {
     if (excludeBotId && msg.authorId === excludeBotId) continue;
+    // Filter out meta-messages (commands and system responses)
+    if (isMetaMessage(msg.content)) continue;
     // Defensive check: only add if authorName is defined
     if (msg.authorName) {
       speakers.add(msg.authorName);

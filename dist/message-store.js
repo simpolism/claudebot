@@ -188,8 +188,10 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
         : currentMessages.slice(currentBoundaries.length > 0
             ? currentMessages.findIndex((m) => m.id === currentBoundaries[currentBoundaries.length - 1]?.lastMessageId) + 1
             : 0);
+    // Filter out meta-messages (commands and system responses)
+    const filteredTailMessages = tailMessages.filter((msg) => !isMetaMessage(msg.content));
     const tailData = [];
-    for (const msg of tailMessages) {
+    for (const msg of filteredTailMessages) {
         const formatted = formatMessage(msg, botUserId, botDisplayName);
         const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
         const tokens = estimateMessageTokens(authorName, msg.content);
@@ -287,12 +289,26 @@ function getMessagesInRange(messages, firstId, lastId) {
     }
     return result;
 }
+/**
+ * Check if a message is a meta-message (command or system response) that should be
+ * filtered out of conversation context.
+ */
+function isMetaMessage(content) {
+    const trimmed = content.trim();
+    return (trimmed.startsWith('/reset') ||
+        trimmed.includes('Thread history cleared') ||
+        trimmed.includes('The `/reset` command only works in threads') ||
+        trimmed.includes('Could not determine parent channel') ||
+        trimmed.includes('Failed to clear thread history'));
+}
 function formatMessage(msg, botUserId, botDisplayName) {
     const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
     return `${authorName}: ${msg.content.trim() || '(empty message)'}`;
 }
 function formatMessages(messages, botUserId, botDisplayName) {
-    return messages.map((m) => formatMessage(m, botUserId, botDisplayName)).join('\n');
+    // Filter out meta-messages (commands and system responses)
+    const filtered = messages.filter((m) => !isMetaMessage(m.content));
+    return filtered.map((m) => formatMessage(m, botUserId, botDisplayName)).join('\n');
 }
 function estimateTokens(text) {
     return Math.ceil(text.length / Math.max(config_1.globalConfig.approxCharsPerToken, 1));
@@ -763,15 +779,10 @@ function clearChannel(channelId) {
 /**
  * Clear a thread's history (both in-memory and database).
  * Records reset metadata to prevent reloading pre-reset messages after downtime.
+ *
+ * @param resetMessageId - The Discord message ID of the /reset command (used as boundary)
  */
-function clearThread(threadId, parentChannelId) {
-    // Get last message info BEFORE clearing (for reset tracking)
-    let lastDiscordMessageId = null;
-    const messages = messagesByChannel.get(threadId);
-    if (messages && messages.length > 0) {
-        const lastMessage = messages[messages.length - 1];
-        lastDiscordMessageId = lastMessage?.id ?? null;
-    }
+function clearThread(threadId, parentChannelId, resetMessageId) {
     // Clear in-memory (currently stored by thread's channelId)
     messagesByChannel.delete(threadId);
     messageIdsByChannel.delete(threadId);
@@ -783,10 +794,11 @@ function clearThread(threadId, parentChannelId) {
         try {
             // Get the last row_id BEFORE clearing (for reset tracking)
             const lastRowId = db.getLastRowId(threadId, threadId);
-            // Record reset metadata BEFORE clearing (with both row_id and Discord message ID)
-            if (lastRowId !== null) {
-                db.recordThreadReset(threadId, lastRowId, lastDiscordMessageId);
-                console.log(`[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${lastDiscordMessageId}`);
+            // Record reset metadata BEFORE clearing
+            // Use the /reset message ID as the boundary so backfill excludes it
+            if (lastRowId !== null && resetMessageId) {
+                db.recordThreadReset(threadId, lastRowId, resetMessageId);
+                console.log(`[Reset] Recorded reset boundary for thread ${threadId} at row_id ${lastRowId}, Discord msg ${resetMessageId}`);
             }
             // Now clear messages and boundaries
             // FIX: Use threadId for channelId parameter (not parentChannelId)
@@ -823,6 +835,9 @@ function getChannelSpeakers(channelId, excludeBotId) {
     const speakers = new Set();
     for (const msg of messages) {
         if (excludeBotId && msg.authorId === excludeBotId)
+            continue;
+        // Filter out meta-messages (commands and system responses)
+        if (isMetaMessage(msg.content))
             continue;
         // Defensive check: only add if authorName is defined
         if (msg.authorName) {

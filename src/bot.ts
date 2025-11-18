@@ -216,13 +216,12 @@ function setupBotEvents(instance: BotInstance): void {
   });
 
   client.on(Events.MessageCreate, async (message) => {
-    // Check for /reset command first (before appending to history)
+    // Check for /reset command first
     const content = message.content.trim();
     const isResetCommand = content === '/reset' || content.startsWith('/reset ');
 
     // ALWAYS append messages to in-memory store (for all in-scope messages)
-    // EXCEPT /reset commands (meta-commands shouldn't be in conversation history)
-    if (isInScope(message) && !isResetCommand) {
+    if (isInScope(message)) {
       appendMessage(message);
 
       // Track bot-to-bot exchanges: reset counter on human messages
@@ -265,7 +264,8 @@ function setupBotEvents(instance: BotInstance): void {
       }
 
       try {
-        clearThread(threadId, parentChannelId);
+        // Pass the /reset message ID to clearThread so it can set the correct boundary
+        clearThread(threadId, parentChannelId, message.id);
         // Only reply if no other bot has replied yet
         if (!repliedResetMessages.has(message.id)) {
           repliedResetMessages.add(message.id);
