@@ -345,7 +345,9 @@ function insertMessage(message) {
     // If changes is 0, it was a duplicate (INSERT OR IGNORE)
     if (result.changes === 0) {
         // Fetch existing row_id
-        const existing = db.prepare('SELECT row_id FROM messages WHERE id = ?').get(message.id);
+        const existing = db
+            .prepare('SELECT row_id FROM messages WHERE id = ?')
+            .get(message.id);
         return existing?.row_id ?? null;
     }
     return result.lastInsertRowid;
@@ -384,6 +386,24 @@ function insertMessages(messages) {
     return rowIds;
 }
 /**
+ * Helper function to map database row to StoredMessage.
+ * Converts snake_case column names to camelCase properties.
+ */
+function mapRowToMessage(row) {
+    return {
+        rowId: row.row_id,
+        id: row.id,
+        channelId: row.channel_id,
+        threadId: row.thread_id,
+        parentChannelId: row.parent_channel_id,
+        authorId: row.author_id,
+        authorName: row.author_name,
+        content: row.content,
+        timestamp: row.timestamp,
+        createdAt: row.created_at,
+    };
+}
+/**
  * Get messages in a specific range (for building blocks from boundaries).
  */
 function getMessagesInRange(firstMessageId, lastMessageId) {
@@ -394,7 +414,8 @@ function getMessagesInRange(firstMessageId, lastMessageId) {
     WHERE id >= ? AND id <= ?
     ORDER BY timestamp ASC
   `);
-    return stmt.all(firstMessageId, lastMessageId);
+    const rows = stmt.all(firstMessageId, lastMessageId);
+    return rows.map(mapRowToMessage);
 }
 /**
  * Get all messages for a channel/thread combination.
@@ -411,7 +432,8 @@ function getMessages(channelId, threadId, limit) {
         query += ` LIMIT ${limit}`;
     }
     const stmt = db.prepare(query);
-    return stmt.all(channelId, threadId);
+    const rows = stmt.all(channelId, threadId);
+    return rows.map(mapRowToMessage);
 }
 /**
  * Get unfrozen tail messages (messages after last boundary).
@@ -428,7 +450,8 @@ function getTailMessages(channelId, threadId, lastBoundaryMessageId) {
       AND id > ?
     ORDER BY timestamp ASC
   `);
-    return stmt.all(channelId, threadId, lastBoundaryMessageId);
+    const rows = stmt.all(channelId, threadId, lastBoundaryMessageId);
+    return rows.map(mapRowToMessage);
 }
 /**
  * Get all distinct parent channel IDs that have messages.
@@ -491,18 +514,7 @@ function getMessagesAfterRow(channelId, afterRowId, threadId = null) {
     ORDER BY row_id ASC
   `);
     const rows = stmt.all(channelId, threadId, afterRowId);
-    return rows.map(row => ({
-        rowId: row.row_id,
-        id: row.id,
-        channelId: row.channel_id,
-        threadId: row.thread_id,
-        parentChannelId: row.parent_channel_id,
-        authorId: row.author_id,
-        authorName: row.author_name,
-        content: row.content,
-        timestamp: row.timestamp,
-        createdAt: row.created_at,
-    }));
+    return rows.map(mapRowToMessage);
 }
 /**
  * Get messages in a row_id range (for building blocks from row-based boundaries).
@@ -517,18 +529,7 @@ function getMessagesByRowRange(firstRowId, lastRowId) {
     ORDER BY row_id ASC
   `);
     const rows = stmt.all(firstRowId, lastRowId);
-    return rows.map(row => ({
-        rowId: row.row_id,
-        id: row.id,
-        channelId: row.channel_id,
-        threadId: row.thread_id,
-        parentChannelId: row.parent_channel_id,
-        authorId: row.author_id,
-        authorName: row.author_name,
-        content: row.content,
-        timestamp: row.timestamp,
-        createdAt: row.created_at,
-    }));
+    return rows.map(mapRowToMessage);
 }
 /**
  * Get the Discord message ID for a given row_id.
@@ -571,7 +572,7 @@ function getBoundaries(channelId, threadId = null) {
     ORDER BY created_at ASC
   `);
     const rows = stmt.all(channelId, threadId);
-    return rows.map(row => ({
+    return rows.map((row) => ({
         id: row.id,
         channelId: row.channel_id,
         threadId: row.thread_id,
@@ -660,8 +661,12 @@ function getDatabaseStats() {
     const db = getDb();
     const messageCount = db.prepare('SELECT COUNT(*) as count FROM messages').get().count;
     const boundaryCount = db.prepare('SELECT COUNT(*) as count FROM block_boundaries').get().count;
-    const channelCount = db.prepare('SELECT COUNT(DISTINCT parent_channel_id) as count FROM messages').get().count;
-    const threadCount = db.prepare('SELECT COUNT(DISTINCT thread_id) as count FROM messages WHERE thread_id IS NOT NULL').get().count;
+    const channelCount = db
+        .prepare('SELECT COUNT(DISTINCT parent_channel_id) as count FROM messages')
+        .get().count;
+    const threadCount = db
+        .prepare('SELECT COUNT(DISTINCT thread_id) as count FROM messages WHERE thread_id IS NOT NULL')
+        .get().count;
     let databaseSizeBytes = 0;
     try {
         const stats = fs.statSync(DB_PATH);

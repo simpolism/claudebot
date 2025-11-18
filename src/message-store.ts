@@ -1069,7 +1069,10 @@ export function getChannelSpeakers(channelId: string, excludeBotId?: string): st
 
   for (const msg of messages) {
     if (excludeBotId && msg.authorId === excludeBotId) continue;
-    speakers.add(msg.authorName);
+    // Defensive check: only add if authorName is defined
+    if (msg.authorName) {
+      speakers.add(msg.authorName);
+    }
   }
 
   return [...speakers];

@@ -298,7 +298,11 @@ function setupBotEvents(instance: BotInstance): void {
 
         stopTyping = startTypingIndicator(msg.channel);
         const imageBlocks = getImageBlocksFromAttachments(msg.attachments);
-        const otherSpeakers = getChannelSpeakers(channelId, client.user?.id);
+        // For threads, use parent channel's speakers since thread inherits parent blocks
+        const speakerChannelId = msg.channel.isThread()
+          ? (msg.channel.parentId ?? channelId)
+          : channelId;
+        const otherSpeakers = getChannelSpeakers(speakerChannelId, client.user?.id);
         const guardSpeakers = Array.from(new Set([...otherSpeakers, botDisplayName])); // Include bot name so guard catches self fragments
         const providerStart = Date.now();
         const aiReply = await aiProvider.send({

@@ -455,6 +455,25 @@ export function insertMessages(messages: StoredMessage[]): number[] {
 }
 
 /**
+ * Helper function to map database row to StoredMessage.
+ * Converts snake_case column names to camelCase properties.
+ */
+function mapRowToMessage(row: any): StoredMessage {
+  return {
+    rowId: row.row_id,
+    id: row.id,
+    channelId: row.channel_id,
+    threadId: row.thread_id,
+    parentChannelId: row.parent_channel_id,
+    authorId: row.author_id,
+    authorName: row.author_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    createdAt: row.created_at,
+  };
+}
+
+/**
  * Get messages in a specific range (for building blocks from boundaries).
  */
 export function getMessagesInRange(
@@ -470,7 +489,8 @@ export function getMessagesInRange(
     ORDER BY timestamp ASC
   `);
 
-  return stmt.all(firstMessageId, lastMessageId) as StoredMessage[];
+  const rows = stmt.all(firstMessageId, lastMessageId) as any[];
+  return rows.map(mapRowToMessage);
 }
 
 /**
@@ -495,7 +515,8 @@ export function getMessages(
   }
 
   const stmt = db.prepare(query);
-  return stmt.all(channelId, threadId) as StoredMessage[];
+  const rows = stmt.all(channelId, threadId) as any[];
+  return rows.map(mapRowToMessage);
 }
 
 /**
@@ -520,7 +541,8 @@ export function getTailMessages(
     ORDER BY timestamp ASC
   `);
 
-  return stmt.all(channelId, threadId, lastBoundaryMessageId) as StoredMessage[];
+  const rows = stmt.all(channelId, threadId, lastBoundaryMessageId) as any[];
+  return rows.map(mapRowToMessage);
 }
 
 /**
@@ -604,18 +626,7 @@ export function getMessagesAfterRow(
   `);
 
   const rows = stmt.all(channelId, threadId, afterRowId) as any[];
-  return rows.map((row) => ({
-    rowId: row.row_id,
-    id: row.id,
-    channelId: row.channel_id,
-    threadId: row.thread_id,
-    parentChannelId: row.parent_channel_id,
-    authorId: row.author_id,
-    authorName: row.author_name,
-    content: row.content,
-    timestamp: row.timestamp,
-    createdAt: row.created_at,
-  }));
+  return rows.map(mapRowToMessage);
 }
 
 /**
@@ -636,18 +647,7 @@ export function getMessagesByRowRange(
   `);
 
   const rows = stmt.all(firstRowId, lastRowId) as any[];
-  return rows.map((row) => ({
-    rowId: row.row_id,
-    id: row.id,
-    channelId: row.channel_id,
-    threadId: row.thread_id,
-    parentChannelId: row.parent_channel_id,
-    authorId: row.author_id,
-    authorName: row.author_name,
-    content: row.content,
-    timestamp: row.timestamp,
-    createdAt: row.created_at,
-  }));
+  return rows.map(mapRowToMessage);
 }
 
 /**

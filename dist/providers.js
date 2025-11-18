@@ -260,7 +260,11 @@ class GeminiProvider {
         const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
         const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
         // Configure response modalities based on output mode
-        const responseModalities = this.outputMode === 'image' ? ['Image'] : this.outputMode === 'text' ? ['Text'] : ['Text', 'Image'];
+        const responseModalities = this.outputMode === 'image'
+            ? ['Image']
+            : this.outputMode === 'text'
+                ? ['Text']
+                : ['Text', 'Image'];
         // Build interleaved content parts with images inline
         const contentParts = [];
         // Split transcript on image markers, keeping the markers

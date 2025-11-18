@@ -218,7 +218,11 @@ function setupBotEvents(instance) {
                 console.log(`[${config.name}] Context built for ${msg.id} in ${contextDuration}ms`);
                 stopTyping = startTypingIndicator(msg.channel);
                 const imageBlocks = (0, context_1.getImageBlocksFromAttachments)(msg.attachments);
-                const otherSpeakers = (0, context_1.getChannelSpeakers)(channelId, client.user?.id);
+                // For threads, use parent channel's speakers since thread inherits parent blocks
+                const speakerChannelId = msg.channel.isThread()
+                    ? (msg.channel.parentId ?? channelId)
+                    : channelId;
+                const otherSpeakers = (0, context_1.getChannelSpeakers)(speakerChannelId, client.user?.id);
                 const guardSpeakers = Array.from(new Set([...otherSpeakers, botDisplayName])); // Include bot name so guard catches self fragments
                 const providerStart = Date.now();
                 const aiReply = await aiProvider.send({
@@ -289,7 +293,9 @@ function setupBotEvents(instance) {
                             .map((a) => `![image](${a.url})`);
                         if (imageUrls.length > 0) {
                             // If no text content, just use image markers; otherwise append with newline
-                            content = content ? content + '\n' + imageUrls.join('\n') : imageUrls.join('\n');
+                            content = content
+                                ? content + '\n' + imageUrls.join('\n')
+                                : imageUrls.join('\n');
                         }
                     }
                     // Fallback if truly empty
@@ -299,7 +305,9 @@ function setupBotEvents(instance) {
                     // Detect if this is a thread message
                     const isThread = sentMsg.channel.isThread();
                     const threadId = isThread ? sentMsg.channel.id : null;
-                    const parentChannelId = isThread ? (sentMsg.channel.parentId ?? sentMsg.channel.id) : sentMsg.channel.id;
+                    const parentChannelId = isThread
+                        ? (sentMsg.channel.parentId ?? sentMsg.channel.id)
+                        : sentMsg.channel.id;
                     const stored = {
                         id: sentMsg.id,
                         channelId: sentMsg.channel.id,

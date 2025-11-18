@@ -92,7 +92,9 @@ function messageToStored(message) {
     // Detect if this is a thread message
     const isThread = message.channel.isThread();
     const threadId = isThread ? message.channel.id : null;
-    const parentChannelId = isThread ? (message.channel.parentId ?? message.channel.id) : message.channel.id;
+    const parentChannelId = isThread
+        ? (message.channel.parentId ?? message.channel.id)
+        : message.channel.id;
     return {
         id: message.id,
         channelId: message.channel.id,
@@ -179,9 +181,11 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
     // Build tail (messages after last frozen block)
     // For threads: all thread messages (threads don't have their own blocks yet)
     // For channels: messages after last block
-    const tailMessages = isThreadContext ? currentMessages : currentMessages.slice(currentBoundaries.length > 0
-        ? currentMessages.findIndex((m) => m.id === currentBoundaries[currentBoundaries.length - 1]?.lastMessageId) + 1
-        : 0);
+    const tailMessages = isThreadContext
+        ? currentMessages
+        : currentMessages.slice(currentBoundaries.length > 0
+            ? currentMessages.findIndex((m) => m.id === currentBoundaries[currentBoundaries.length - 1]?.lastMessageId) + 1
+            : 0);
     const tailData = [];
     for (const msg of tailMessages) {
         const formatted = formatMessage(msg, botUserId, botDisplayName);
@@ -190,7 +194,8 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
         tailData.push({ text: formatted, tokens });
     }
     // Calculate totals
-    let totalTokens = blockData.reduce((sum, b) => sum + b.tokens, 0) + tailData.reduce((sum, t) => sum + t.tokens, 0);
+    let totalTokens = blockData.reduce((sum, b) => sum + b.tokens, 0) +
+        tailData.reduce((sum, t) => sum + t.tokens, 0);
     // Trim for THIS bot's specific budget (but don't modify global state)
     const finalBlockData = [...blockData];
     const finalTailData = [...tailData];
@@ -541,7 +546,7 @@ async function lazyLoadThread(threadId, parentChannelId, client) {
         // Initialize in-memory storage
         ensureChannelInitialized(threadId);
         messagesByChannel.set(threadId, messages);
-        messageIdsByChannel.set(threadId, new Set(messages.map(m => m.id)));
+        messageIdsByChannel.set(threadId, new Set(messages.map((m) => m.id)));
         blockBoundaries.set(threadId, boundaries);
         console.log(`[LazyLoad] Loaded ${messages.length} messages and ${boundaries.length} boundaries from DB`);
         // Backfill any messages missed during downtime from Discord
@@ -815,7 +820,10 @@ function getChannelSpeakers(channelId, excludeBotId) {
     for (const msg of messages) {
         if (excludeBotId && msg.authorId === excludeBotId)
             continue;
-        speakers.add(msg.authorName);
+        // Defensive check: only add if authorName is defined
+        if (msg.authorName) {
+            speakers.add(msg.authorName);
+        }
     }
     return [...speakers];
 }

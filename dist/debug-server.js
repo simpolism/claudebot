@@ -70,8 +70,12 @@ function getChannelDebugInfo(channelId) {
             lastMessageId: boundary.lastMessageId,
             tokenCount: boundary.tokenCount,
             messageCount: blockMessageCount,
-            firstMessage: firstMsg ? `${firstMsg.authorName}: ${firstMsg.content.slice(0, 100)}...` : 'NOT FOUND',
-            lastMessage: lastMsg ? `${lastMsg.authorName}: ${lastMsg.content.slice(0, 100)}...` : 'NOT FOUND',
+            firstMessage: firstMsg
+                ? `${firstMsg.authorName}: ${firstMsg.content.slice(0, 100)}...`
+                : 'NOT FOUND',
+            lastMessage: lastMsg
+                ? `${lastMsg.authorName}: ${lastMsg.content.slice(0, 100)}...`
+                : 'NOT FOUND',
         };
     });
     // Get tail info
@@ -97,7 +101,8 @@ function getChannelDebugInfo(channelId) {
     };
 }
 function getBotInstance(botName) {
-    return bot_1.botInstances.find((inst) => inst.config.name.toLowerCase() === botName.toLowerCase() || inst.client.user?.username?.toLowerCase() === botName.toLowerCase());
+    return bot_1.botInstances.find((inst) => inst.config.name.toLowerCase() === botName.toLowerCase() ||
+        inst.client.user?.username?.toLowerCase() === botName.toLowerCase());
 }
 function buildTranscriptText(blocks, tail) {
     const parts = [...blocks];
@@ -109,13 +114,18 @@ function buildTranscriptText(blocks, tail) {
 function buildPayloadPreview(channelId, botName) {
     const instance = getBotInstance(botName);
     if (!instance) {
-        return { error: `Bot "${botName}" not found. Available bots: ${bot_1.botInstances.map((i) => i.config.name).join(', ')}` };
+        return {
+            error: `Bot "${botName}" not found. Available bots: ${bot_1.botInstances.map((i) => i.config.name).join(', ')}`,
+        };
     }
     if (!instance.client.user) {
         return { error: `Bot "${botName}" is not logged in yet` };
     }
     const botUserId = instance.client.user.id;
-    const botDisplayName = instance.client.user.username ?? instance.client.user.globalName ?? instance.client.user.tag ?? 'Bot';
+    const botDisplayName = instance.client.user.username ??
+        instance.client.user.globalName ??
+        instance.client.user.tag ??
+        'Bot';
     const resolved = (0, config_1.resolveConfig)(instance.config);
     // Note: Debug server shows channel context, not thread context
     // To support threads, would need to detect thread and pass threadId/parentChannelId
@@ -243,7 +253,11 @@ function buildGeminiPayloadPreview(transcript, botDisplayName, config) {
         { role: 'user', parts: [{ text: transcriptText }] },
         { role: 'model', parts: [{ text: `${botDisplayName}:` }] },
     ];
-    const responseModalities = config.geminiOutputMode === 'image' ? ['Image'] : config.geminiOutputMode === 'text' ? ['Text'] : ['Text', 'Image'];
+    const responseModalities = config.geminiOutputMode === 'image'
+        ? ['Image']
+        : config.geminiOutputMode === 'text'
+            ? ['Text']
+            : ['Text', 'Image'];
     return {
         model: config.model,
         contents,
