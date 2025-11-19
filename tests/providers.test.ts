@@ -60,6 +60,7 @@ describe('OpenAIProvider message layout', () => {
       openaiBaseURL: '',
       openaiApiKey: 'key',
       supportsImageBlocks: false,
+      useOpenAIPromptCaching: false,
     });
 
     await provider.send({
@@ -79,6 +80,64 @@ describe('OpenAIProvider message layout', () => {
     });
   });
 
+  it('chunks cached blocks when OpenAI prompt caching flag is set', async () => {
+    const { createAIProvider } = await import('../src/providers');
+    const provider = createAIProvider({
+      provider: 'openai',
+      systemPrompt: '',
+      prefillCommand: '',
+      temperature: 0,
+      maxTokens: 256,
+      maxContextTokens: 1000,
+      approxCharsPerToken: 4,
+      anthropicModel: '',
+      openaiModel: 'test-model',
+      openaiBaseURL: '',
+      openaiApiKey: 'key',
+      supportsImageBlocks: true,
+      useOpenAIPromptCaching: true,
+    });
+
+    await provider.send({
+      conversationData: {
+        cachedBlocks: ['Alice: cached line', 'Bob: second block'],
+        tail: [{ role: 'user', content: 'Carol: latest' }],
+      },
+      botDisplayName: 'Bot',
+      imageBlocks: [
+        {
+          type: 'image',
+          source: { type: 'url', url: 'http://example/image.png' },
+        },
+      ],
+      otherSpeakers: ['Alice', 'Bob', 'Carol'],
+    });
+
+    const messages = createMock.mock.calls[0][0].messages;
+    expect(messages[0]).toEqual({
+      role: 'user',
+      content: 'Alice: cached line\n',
+    });
+    expect(messages[1]).toEqual({
+      role: 'user',
+      content: 'Bob: second block\n',
+    });
+    expect(messages[2]).toMatchObject({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Carol: latest' },
+        {
+          type: 'image_url',
+          image_url: { url: 'http://example/image.png' },
+        },
+      ],
+    });
+    expect(messages[3]).toEqual({
+      role: 'assistant',
+      content: 'Bot:',
+    });
+  });
+
   it('sends user transcript when images are enabled', async () => {
     const { createAIProvider } = await import('../src/providers');
     const provider = createAIProvider({
@@ -94,6 +153,7 @@ describe('OpenAIProvider message layout', () => {
       openaiBaseURL: '',
       openaiApiKey: 'key',
       supportsImageBlocks: true,
+      useOpenAIPromptCaching: false,
     });
 
     await provider.send({
@@ -165,6 +225,7 @@ describe('OpenAIProvider message layout', () => {
       openaiBaseURL: '',
       openaiApiKey: 'key',
       supportsImageBlocks: false,
+      useOpenAIPromptCaching: false,
     });
 
     try {

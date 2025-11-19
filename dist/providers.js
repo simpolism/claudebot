@@ -150,6 +150,7 @@ class OpenAIProvider {
         this.model = options.openaiModel;
         this.supportsImageBlocks = options.supportsImageBlocks;
         this.useUserAssistantPrefill = options.useUserAssistantPrefill;
+        this.usePromptCaching = options.useOpenAIPromptCaching;
         this.client = new openai_1.default({
             apiKey,
             baseURL: options.openaiBaseURL,
@@ -158,9 +159,10 @@ class OpenAIProvider {
     async send(params) {
         const { conversationData, botDisplayName, imageBlocks, otherSpeakers } = params;
         const { cachedBlocks, tail } = conversationData;
-        const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
         const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
         const trimmedSystemPrompt = this.systemPrompt.trim();
+        const trimmedPrefillCommand = this.prefillCommand.trim();
+        const usePromptCaching = this.usePromptCaching;
         const messages = [];
         if (trimmedSystemPrompt?.length > 0) {
             messages.push({
@@ -168,14 +170,51 @@ class OpenAIProvider {
                 content: trimmedSystemPrompt,
             });
         }
-        const trimmedPrefillCommand = this.prefillCommand.trim();
         if (trimmedPrefillCommand?.length > 0) {
             messages.push({
                 role: 'user',
                 content: trimmedPrefillCommand,
             });
         }
-        if (this.supportsImageBlocks || this.useUserAssistantPrefill) {
+        if (usePromptCaching) {
+            for (const blockText of cachedBlocks) {
+                const normalized = blockText.endsWith('\n') ? blockText : `${blockText}\n`;
+                messages.push({
+                    role: 'user',
+                    content: normalized,
+                });
+            }
+            const tailText = tail.length > 0 ? tail.map((m) => m.content).join('\n') : '';
+            const tailContentParts = [];
+            if (tailText) {
+                tailContentParts.push({
+                    type: 'text',
+                    text: tailText,
+                });
+            }
+            if (this.supportsImageBlocks && imageBlocks.length > 0) {
+                tailContentParts.push(...imageBlocks.map((block) => ({
+                    type: 'image_url',
+                    image_url: {
+                        url: block.source.url,
+                    },
+                })));
+            }
+            if (tailContentParts.length > 0) {
+                messages.push({
+                    role: 'user',
+                    content: tailContentParts.length === 1 && tailContentParts[0].type === 'text'
+                        ? tailContentParts[0].text
+                        : tailContentParts,
+                });
+            }
+            messages.push({
+                role: 'assistant',
+                content: `${botDisplayName}:`,
+            });
+        }
+        else if (this.supportsImageBlocks || this.useUserAssistantPrefill) {
+            const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
             // When images are supported or user/assistant prefill is requested,
             // transcript must be in user content (for image_url blocks or Anthropic-style formatting)
             const userContent = [
@@ -202,6 +241,7 @@ class OpenAIProvider {
             });
         }
         else {
+            const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
             // Prefer transcript in assistant role with prefill appended
             // This gives the model more natural continuation behavior
             messages.push({

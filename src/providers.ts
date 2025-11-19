@@ -29,6 +29,7 @@ type ProviderInitOptions = {
   openaiApiKey: string;
   supportsImageBlocks: boolean;
   useUserAssistantPrefill: boolean;
+  useOpenAIPromptCaching: boolean;
   geminiModel: string;
   geminiApiKey: string;
   geminiOutputMode: 'text' | 'image' | 'both';
@@ -212,6 +213,7 @@ class OpenAIProvider implements AIProvider {
   private model: string;
   private supportsImageBlocks: boolean;
   private useUserAssistantPrefill: boolean;
+  private usePromptCaching: boolean;
 
   constructor(options: ProviderInitOptions) {
     const apiKey = options.openaiApiKey;
@@ -225,6 +227,7 @@ class OpenAIProvider implements AIProvider {
     this.model = options.openaiModel;
     this.supportsImageBlocks = options.supportsImageBlocks;
     this.useUserAssistantPrefill = options.useUserAssistantPrefill;
+    this.usePromptCaching = options.useOpenAIPromptCaching;
     this.client = new OpenAI({
       apiKey,
       baseURL: options.openaiBaseURL,
@@ -234,9 +237,10 @@ class OpenAIProvider implements AIProvider {
   async send(params: ProviderRequest): Promise<AIResponse> {
     const { conversationData, botDisplayName, imageBlocks, otherSpeakers } = params;
     const { cachedBlocks, tail } = conversationData;
-    const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
     const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
     const trimmedSystemPrompt = this.systemPrompt.trim();
+    const trimmedPrefillCommand = this.prefillCommand.trim();
+    const usePromptCaching = this.usePromptCaching;
 
     const messages: ChatCompletionMessageParam[] = [];
     if (trimmedSystemPrompt?.length > 0) {
@@ -246,7 +250,6 @@ class OpenAIProvider implements AIProvider {
       });
     }
 
-    const trimmedPrefillCommand = this.prefillCommand.trim();
     if (trimmedPrefillCommand?.length > 0) {
       messages.push({
         role: 'user',
@@ -254,7 +257,50 @@ class OpenAIProvider implements AIProvider {
       });
     }
 
-    if (this.supportsImageBlocks || this.useUserAssistantPrefill) {
+    if (usePromptCaching) {
+      for (const blockText of cachedBlocks) {
+        const normalized = blockText.endsWith('\n') ? blockText : `${blockText}\n`;
+        messages.push({
+          role: 'user',
+          content: normalized,
+        });
+      }
+
+      const tailText = tail.length > 0 ? tail.map((m) => m.content).join('\n') : '';
+      const tailContentParts: ChatCompletionContentPart[] = [];
+      if (tailText) {
+        tailContentParts.push({
+          type: 'text' as const,
+          text: tailText,
+        });
+      }
+      if (this.supportsImageBlocks && imageBlocks.length > 0) {
+        tailContentParts.push(
+          ...imageBlocks.map((block) => ({
+            type: 'image_url' as const,
+            image_url: {
+              url: block.source.url,
+            },
+          })),
+        );
+      }
+
+      if (tailContentParts.length > 0) {
+        messages.push({
+          role: 'user',
+          content:
+            tailContentParts.length === 1 && tailContentParts[0].type === 'text'
+              ? tailContentParts[0].text
+              : tailContentParts,
+        });
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: `${botDisplayName}:`,
+      });
+    } else if (this.supportsImageBlocks || this.useUserAssistantPrefill) {
+      const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
       // When images are supported or user/assistant prefill is requested,
       // transcript must be in user content (for image_url blocks or Anthropic-style formatting)
       const userContent: ChatCompletionContentPart[] = [
@@ -283,6 +329,7 @@ class OpenAIProvider implements AIProvider {
         content: botDisplayName + ':',
       });
     } else {
+      const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
       // Prefer transcript in assistant role with prefill appended
       // This gives the model more natural continuation behavior
       messages.push({

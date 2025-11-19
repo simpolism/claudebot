@@ -199,6 +199,7 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
     openaiApiKey: resolved.openaiApiKey || '',
     supportsImageBlocks: Boolean(botConfig.supportsImageBlocks),
     useUserAssistantPrefill: Boolean(botConfig.useUserAssistantPrefill),
+    useOpenAIPromptCaching: Boolean(resolved.useOpenAIPromptCaching),
     geminiModel: resolved.model,
     geminiApiKey: resolved.geminiApiKey || '',
     geminiOutputMode: resolved.geminiOutputMode || 'both',
