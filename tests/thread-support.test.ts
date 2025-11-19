@@ -3,7 +3,6 @@
  */
 
 // Set environment BEFORE importing modules
-process.env.USE_DATABASE_STORAGE = 'true';
 process.env.TEST_DB_PATH = 'test-claude-cache.sqlite';
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

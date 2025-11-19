@@ -400,15 +400,10 @@ function setupBotEvents(instance) {
 async function main() {
     // Start debug server for inspecting in-memory state
     (0, debug_server_1.startDebugServer)();
-    // Initialize database if feature flag is enabled
-    if (config_1.globalConfig.useDatabaseStorage) {
-        console.log('[Database] Initializing SQLite storage (USE_DATABASE_STORAGE=true)');
-        (0, database_1.initializeDatabase)();
-        const stats = (0, database_1.getDatabaseStats)();
-        console.log('[Database] Current state:', stats);
-    }
-    // Load block boundaries from disk (for Anthropic cache consistency)
-    (0, message_store_1.loadBoundariesFromDisk)();
+    console.log('[Database] Initializing SQLite storage');
+    (0, database_1.initializeDatabase)();
+    const stats = (0, database_1.getDatabaseStats)();
+    console.log('[Database] Current state:', stats);
     console.log('Starting multi-bot system with configuration:', {
         mainChannelIds: config_1.globalConfig.mainChannelIds.length > 0 ? config_1.globalConfig.mainChannelIds : ['(unset)'],
         maxContextTokens: config_1.globalConfig.maxContextTokens,
@@ -466,15 +461,11 @@ main().catch((err) => {
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('\nReceived SIGINT, shutting down gracefully...');
-    if (config_1.globalConfig.useDatabaseStorage) {
-        (0, database_1.closeDatabase)();
-    }
+    (0, database_1.closeDatabase)();
     process.exit(0);
 });
 process.on('SIGTERM', () => {
     console.log('\nReceived SIGTERM, shutting down gracefully...');
-    if (config_1.globalConfig.useDatabaseStorage) {
-        (0, database_1.closeDatabase)();
-    }
+    (0, database_1.closeDatabase)();
     process.exit(0);
 });

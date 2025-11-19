@@ -9,23 +9,23 @@
 
 Discord API efficiency is explicitly *not* a goal; focus on latency/context/cost instead.
 
-## Disk Cache Contract
+## SQLite Cache Contract
 
-`conversation-cache.json` exists **only** to remember block boundaries (`firstMessageId`, `lastMessageId`, `tokenCount`) across restarts so Anthropic sees byte-identical cached blocks. It should never try to persist message text, author info, or any other conversation state; message data is always re-fetched from Discord and held in memory.
+`claude-cache.sqlite` is the **only** persistence layer. Every Discord message and every frozen block boundary is written there so we can rebuild byte-identical cached chunks on reboot without touching Anthropic’s cache. The DB is lean—raw payloads, boundary metadata, and reset markers—but it is authoritative. No JSON cache, no parallel store.
 
 ## Architectural Context
 
-- Legacy SQLite path stored every message in `claude-cache.sqlite` and queried via SQL; the current design dropped that in favor of an in-memory store plus a JSON file for block metadata.
+- Legacy SQLite path stored every message in `claude-cache.sqlite` and queried via SQL. We briefly experimented with a JSON-only boundary file, but that split-brain design is gone—the database is canonical again.
 - A single in-memory list per channel now replaces the old tail cache complexity.
 - Discord provides raw message payloads (authorId, authorName, content); formatting happens later using `botDisplayName` for the bot’s own entries.
-- Startup hydration fetches the full history (with correct backward pagination) so cache chunks can be reconstructed immediately.
+- Startup hydration loads existing history from SQLite first, then backfills from Discord for any downtime gap so cached chunks remain byte-stable.
 
 ## Key Operating Decisions
 
 - **Block size**: fixed 30k-token blocks to get reliable cache hits without huge payloads.
-- **Tail handling**: recent, unhardened messages live only in memory; once frozen into a block, only the boundary metadata persists on disk.
+- **Tail handling**: recent, unhardened messages live in memory and, because we persist every message row, they are automatically present in SQLite if we crash mid-tail.
 - **Formatting**: use `"AuthorName: message"` per line with a single newline separator; assistant-prefill gets exactly one newline before it.
-- **Disk persistence**: write and read only the block boundary triplets; never mix in conversation text.
+- **Persistence**: rely exclusively on SQLite for both raw messages and boundary triplets; never re-introduce a JSON cache.
 - **Fragmentation guard**: rely on real Discord usernames stored with each message, never text-parsing heuristics.
 - **Scope**: bot only watches channels enumerated in `MAIN_CHANNEL_IDS`; thread support is out of scope unless explicitly added.
 

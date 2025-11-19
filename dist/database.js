@@ -753,26 +753,18 @@ function clearAllData() {
  */
 function recordThreadReset(threadId, lastRowId, lastDiscordMessageId = null, botId = null) {
     const db = getDb();
-    if (botId) {
-        // Reset for specific bot
-        const stmt = db.prepare(`
-      INSERT OR REPLACE INTO thread_metadata
-      (thread_id, bot_id, last_reset_row_id, last_reset_discord_message_id, last_reset_at)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-        stmt.run(threadId, botId, lastRowId, lastDiscordMessageId, Date.now());
+    const targetBotId = botId ?? '__GLOBAL__';
+    if (!botId) {
+        // Global reset: clear all existing per-bot records
+        const deleteStmt = db.prepare(`DELETE FROM thread_metadata WHERE thread_id = ?`);
+        deleteStmt.run(threadId);
     }
-    else {
-        // Reset for ALL bots - delete all existing reset records for this thread
-        // Then we don't insert anything (no reset = see everything)
-        // Actually, we should insert for all known bots. But we don't have a bot registry here.
-        // Better approach: don't track "all bot" resets in DB, handle in-memory only
-        // Actually, let me reconsider - if botId is null, we should NOT record anything
-        // because "no reset record" means "not reset" which is correct for other bots
-        console.log(`[Database] Clearing all bot reset records for thread ${threadId} (global reset)`);
-        const stmt = db.prepare(`DELETE FROM thread_metadata WHERE thread_id = ?`);
-        stmt.run(threadId);
-    }
+    const stmt = db.prepare(`
+    INSERT OR REPLACE INTO thread_metadata
+    (thread_id, bot_id, last_reset_row_id, last_reset_discord_message_id, last_reset_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+    stmt.run(threadId, targetBotId, lastRowId, lastDiscordMessageId, Date.now());
 }
 /**
  * Get reset information for a thread and specific bot.
@@ -782,12 +774,21 @@ function recordThreadReset(threadId, lastRowId, lastDiscordMessageId = null, bot
  */
 function getThreadResetInfo(threadId, botId) {
     const db = getDb();
-    const stmt = db.prepare(`
-    SELECT last_reset_row_id, last_reset_discord_message_id, last_reset_at
-    FROM thread_metadata
-    WHERE thread_id = ? AND bot_id = ?
-  `);
-    const result = stmt.get(threadId, botId);
+    const fetchInfo = (targetBotId) => {
+        const stmt = db.prepare(`
+      SELECT last_reset_row_id, last_reset_discord_message_id, last_reset_at
+      FROM thread_metadata
+      WHERE thread_id = ? AND bot_id = ?
+    `);
+        return stmt.get(threadId, targetBotId);
+    };
+    let result = undefined;
+    if (botId) {
+        result = fetchInfo(botId);
+    }
+    if (!result) {
+        result = fetchInfo('__GLOBAL__');
+    }
     if (!result)
         return null;
     return {

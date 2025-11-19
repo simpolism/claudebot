@@ -9,19 +9,16 @@
 
 Discord API call efficiency is NOT a priority. Don't optimize for it.
 
-## Critical Understanding: The Disk Cache Purpose
+## Critical Understanding: Persistent Cache Purpose
 
-**The ONLY purpose of the disk cache (`conversation-cache.json`) is to persist block boundaries across server restarts so Anthropic prompt caching works without paying to recache.**
+**SQLite (`claude-cache.sqlite`) is now the single source of truth for cached history.**
 
-When the server restarts for updates:
-1. Block boundaries (firstMessageId, lastMessageId, tokenCount) are preserved on disk
-2. On startup, these boundaries are used to reconstruct the exact same text chunks
-3. Anthropic's API sees byte-identical cached blocks = cache hits = no recaching cost
+When the server restarts:
+1. Every stored Discord message plus its block boundary metadata already lives in SQLite.
+2. Startup hydrates memory directly from SQLite *before* hitting Discord.
+3. The same message text is reformatted under the same boundaries, so Anthropic sees byte-identical cached blocks and never forces a recache.
 
-The disk cache is NOT meant to:
-- Store message content (that's fetched fresh from Discord)
-- Be a complete message database
-- Track conversation state beyond block boundaries
+SQLite is not a general analytics store; it only tracks raw Discord payloads, block boundaries, and reset metadata. Message text still comes from Discord for live updates, but the database guarantees cache-stable transcripts across restarts without a parallel JSON path.
 
 ## Historical Context
 
@@ -31,11 +28,7 @@ The disk cache is NOT meant to:
 - Queried recent messages with SQL
 - Simple and correct
 
-**Current branch replaced SQLite with**:
-- JSON file for block boundaries
-- In-memory tailCache for unfrozen messages
-- Discord API hydration for text content
-- More complex, multiple sources of truth
+**A later branch replaced SQLite with a JSON cache**, which introduced split sources of truth and made cached block reconstruction fragile. We've now returned to SQLite as the canonical persistence layer so block boundaries and transcripts never drift across restarts.
 
 ## Known Issues (RESOLVED)
 
@@ -52,9 +45,9 @@ All major issues have been fixed in the simplified architecture:
 - Block size: 30k tokens (stable enough for cache hits, not too large)
 - Tail: Messages not yet in a hardened block (in-memory only, not persisted)
 - Format: "AuthorName: message content" per line (single `\n` between messages)
-- Storage: Raw message data (authorId, authorName, content) stored in memory
+- Storage: Raw message data (authorId, authorName, content) stored in memory and persisted via SQLite
 - Formatting: Done at query time using botDisplayName for bot's own messages
-- Disk persistence: Only block boundaries (firstMessageId, lastMessageId, tokenCount)
+- Persistence: SQLite holds both messages and block boundaries; no JSON cache path remains
 - OpenAI transcript role: Prefer assistant role with prefill appended (single `\n` before prefill), unless images need user content blocks
 - Fragmentation guard: Uses actual Discord usernames from message store, not text parsing
 - No thread support: Only operates in channels explicitly listed in `MAIN_CHANNEL_IDS`

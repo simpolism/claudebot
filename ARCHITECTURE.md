@@ -17,7 +17,7 @@ src/
 ├── discord-utils.ts    # Discord formatting utilities
 └── types.ts            # Shared TypeScript types
 
-conversation-cache.json # Auto-generated, stores block boundaries only
+claude-cache.sqlite    # SQLite persistence for Discord messages + block boundaries
 package.json            # Dependencies: discord.js, @anthropic-ai/sdk, openai
 ```
 
@@ -37,7 +37,7 @@ package.json            # Dependencies: discord.js, @anthropic-ai/sdk, openai
 **Initialization Flow:**
 
 1. **Startup (`main()`):**
-   - Loads block boundaries from disk: `loadBoundariesFromDisk()` (message-store.ts)
+   - Initializes SQLite (`initializeDatabase()`) and logs current stats
    - Logs configuration summary
    - Filters bots with missing tokens
 
@@ -116,15 +116,14 @@ interface BlockBoundary {
 ### Flow
 
 1. **On Startup:**
-   - Load block boundaries from disk (`conversation-cache.json`)
-   - Fetch history from Discord up to MAX_CONTEXT_TOKENS
-   - Freeze history into 30k token blocks
-   - Save updated boundaries to disk
+   - Hydrate messages + block boundaries from SQLite for each main channel
+   - Backfill any downtime gap from Discord (messages after the newest stored ID)
+   - Freeze history into 30k-token blocks as needed and persist new boundaries in SQLite
 
 2. **On Every MessageCreate:**
    - Append message to in-memory list
    - Check if tail has 30k+ tokens → freeze new block
-   - Save boundaries to disk
+   - Persist the message row and any new block boundary to SQLite
 
 3. **On Bot Mention (Build Context):**
    - Get frozen blocks (slice by boundaries)
@@ -158,26 +157,12 @@ interface BlockBoundary {
 }
 ```
 
-### Disk Persistence
+### SQLite Persistence
 
-**Storage:** `conversation-cache.json`
-- Stores **only boundaries** (no text)
-- Text reconstructed from in-memory messages at runtime
-
-**Example JSON:**
-```json
-{
-  "channels": {
-    "channel-123": [
-      {
-        "firstMessageId": "90",
-        "lastMessageId": "200",
-        "tokenCount": 30000
-      }
-    ]
-  }
-}
-```
+**Storage:** `claude-cache.sqlite`
+- Persists raw Discord messages (channel/thread IDs, author info, content, timestamps).
+- Persists every frozen block boundary (first/last message IDs, row IDs, token count).
+- Startup hydrates in-memory state directly from SQLite, then backfills any downtime gap from Discord so cached blocks remain byte-identical.
 
 ### Block Freezing
 

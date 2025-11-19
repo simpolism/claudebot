@@ -2,9 +2,12 @@ process.env.HAIKU_DISCORD_TOKEN ||= 'test-token';
 process.env.KIMI_DISCORD_TOKEN ||= 'test-token';
 process.env.GROQ_API_KEY ||= 'test-key';
 process.env.MAIN_CHANNEL_IDS ||= '';
+process.env.TEST_DB_PATH ||= 'test-context-claude-cache.sqlite';
 
-import { describe, expect, it, vi, afterAll, afterEach, beforeAll } from 'vitest';
+import { describe, expect, it, vi, afterAll, afterEach, beforeAll, beforeEach } from 'vitest';
 import { type Client, type Message } from 'discord.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
 type MockMessage = {
   id: string;
@@ -12,11 +15,18 @@ type MockMessage = {
   authorId: string;
 };
 
+const TEST_DB_PATH = path.join(process.cwd(), process.env.TEST_DB_PATH);
+
 function createMockDiscordMessage(msg: MockMessage, channelId: string): Message {
   return {
     id: msg.id,
     content: msg.content,
-    channel: { id: channelId },
+    channel: {
+      id: channelId,
+      isThread: () => false,
+      parentId: null,
+      isTextBased: () => true,
+    },
     author: {
       id: msg.authorId,
       username: msg.authorId,
@@ -41,24 +51,37 @@ function baseChannel(overrides: Partial<any> = {}) {
   return {
     id: 'channel',
     isTextBased: () => true,
+    isThread: () => false,
     ...overrides,
   } as Message['channel'];
 }
 
 const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-afterAll(() => {
-  consoleSpy.mockRestore();
-});
 
 type StoreModule = typeof import('../src/message-store');
 type ContextModule = typeof import('../src/context');
+type DatabaseModule = typeof import('../src/database');
 
 let storeModule: StoreModule | null = null;
 let contextModule: ContextModule | null = null;
+let databaseModule: DatabaseModule | null = null;
 
 beforeAll(async () => {
+  if (fs.existsSync(TEST_DB_PATH)) {
+    fs.rmSync(TEST_DB_PATH);
+  }
+  databaseModule = await import('../src/database');
+  databaseModule.initializeDatabase();
   storeModule = await import('../src/message-store');
   contextModule = await import('../src/context');
+});
+
+afterAll(() => {
+  consoleSpy.mockRestore();
+  databaseModule?.closeDatabase();
+  if (fs.existsSync(TEST_DB_PATH)) {
+    fs.rmSync(TEST_DB_PATH);
+  }
 });
 
 function getStoreModule(): StoreModule {
@@ -70,6 +93,17 @@ function getContextModule(): ContextModule {
   if (!contextModule) throw new Error('context module not loaded');
   return contextModule;
 }
+
+beforeEach(() => {
+  if (databaseModule) {
+    databaseModule.closeDatabase();
+  }
+  if (fs.existsSync(TEST_DB_PATH)) {
+    fs.rmSync(TEST_DB_PATH);
+  }
+  databaseModule?.initializeDatabase();
+  getStoreModule().clearAll();
+});
 
 afterEach(() => {
   getStoreModule().clearAll();

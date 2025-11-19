@@ -178,10 +178,8 @@ This feels less like interrogation, more like observation followed by participat
 
 For Anthropic cost optimization:
 - Conversation split into cached blocks (stable) + tail (fresh)
-- Cached block metadata stored in `conversation-cache.json` (only message IDs/token counts, no transcript text)
+- `claude-cache.sqlite` persists both raw Discord messages and the frozen block metadata, so restarts rebuild byte-identical chunks without touching Anthropic caches
 - Same bytes sent = cache hit
-- Only writes to JSON when block boundaries roll
-- Persists across process restarts
 - Cached + tail can briefly exceed `MAX_CONTEXT_TOKENS`; this is intentional because the configured budget (100k default) is still below Claude's 200k limit and ensures the newest uncached messages always make it in
 
 ### Bot-to-Bot Safety
@@ -206,7 +204,7 @@ When bots can mention each other:
 │   ├── providers.ts        # AI provider abstraction
 │   ├── cache.ts            # Prompt caching persistence
 │   └── types.ts            # Shared types
-├── conversation-cache.json # Auto-created cache file
+├── claude-cache.sqlite     # SQLite persistence for messages + block boundaries
 ├── FUTURE_IDEAS.md         # Feature roadmap
 ├── package.json
 ├── README.md

@@ -10,7 +10,6 @@ import {
 import { createAIProvider, AIProvider } from './providers';
 import { activeBotConfigs, globalConfig, resolveConfig, BotConfig } from './config';
 import {
-  loadBoundariesFromDisk,
   loadHistoryFromDiscord,
   appendMessage,
   appendStoredMessage,
@@ -513,16 +512,10 @@ async function main(): Promise<void> {
   // Start debug server for inspecting in-memory state
   startDebugServer();
 
-  // Initialize database if feature flag is enabled
-  if (globalConfig.useDatabaseStorage) {
-    console.log('[Database] Initializing SQLite storage (USE_DATABASE_STORAGE=true)');
-    initializeDatabase();
-    const stats = getDatabaseStats();
-    console.log('[Database] Current state:', stats);
-  }
-
-  // Load block boundaries from disk (for Anthropic cache consistency)
-  loadBoundariesFromDisk();
+  console.log('[Database] Initializing SQLite storage');
+  initializeDatabase();
+  const stats = getDatabaseStats();
+  console.log('[Database] Current state:', stats);
 
   console.log('Starting multi-bot system with configuration:', {
     mainChannelIds:
@@ -592,16 +585,12 @@ main().catch((err) => {
 // Graceful shutdown
 process.on('SIGINT', () => {
   console.log('\nReceived SIGINT, shutting down gracefully...');
-  if (globalConfig.useDatabaseStorage) {
-    closeDatabase();
-  }
+  closeDatabase();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('\nReceived SIGTERM, shutting down gracefully...');
-  if (globalConfig.useDatabaseStorage) {
-    closeDatabase();
-  }
+  closeDatabase();
   process.exit(0);
 });

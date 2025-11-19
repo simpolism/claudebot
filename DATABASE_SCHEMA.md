@@ -176,9 +176,9 @@ Migrations are applied sequentially. Each migration:
 - Plus SQLite overhead (~30%)
 - Total: ~65 MB per 100k messages
 
-## Comparison to conversation-cache.json
+## Why SQLite Replaced `conversation-cache.json`
 
-**Before (JSON):**
+**JSON cache (legacy):**
 ```json
 {
   "channels": {
@@ -188,40 +188,28 @@ Migrations are applied sequentially. Each migration:
   }
 }
 ```
-- Only stores boundaries, not messages
-- No thread support
-- Manual sync with in-memory store
-- No ACID guarantees
+- Stored only boundaries, no message bodies
+- Required manual sync with in-memory state
+- Provided no ACID guarantees
+- Had no concept of per-thread data or resets
 
-**After (SQLite):**
-- Single source of truth
-- Full message history
-- Thread support built-in
-- ACID transactions
-- Query-based eviction
+**SQLite (current):**
+- Single source of truth for both raw Discord messages and block boundaries
+- Thread-aware schemas with reset metadata
+- ACID transactions, WAL durability, indexed queries
+- Lets us rebuild byte-identical cached blocks on restart without extra JSON plumbing
 
-## Migration from Current System
+## Migration Status
 
-**Phase 1: Parallel Writes**
-- Keep in-memory `messagesByChannel` Map
-- Keep `conversation-cache.json` writes
-- Add parallel DB writes
-- Feature flag: `USE_DATABASE_STORAGE=false` (default)
-
-**Phase 2: Read from Database**
-- `USE_DATABASE_STORAGE=true` enables DB reads
-- Falls back to in-memory if DB empty
-- Validates consistency between systems
-
-**Phase 3: Remove Old System**
-- Delete `conversation-cache.json`
-- Remove `messagesByChannel` Map
-- Remove in-memory block management
-- Keep small LRU cache for hot messages
+The migration is complete:
+- `claude-cache.sqlite` now persists every message/block write
+- `conversation-cache.json` has been removed from the runtime
+- The `USE_DATABASE_STORAGE` feature flag is gone; SQLite is mandatory
+- In-memory maps remain as hot caches, but they hydrate exclusively from SQLite on boot and lazily for threads
 
 ## Testing Strategy
 
 1. **Unit tests**: Schema creation, migrations, CRUD operations
 2. **Integration tests**: Parallel writes, consistency checks
 3. **Load tests**: 10k messages, measure query performance
-4. **Migration tests**: conversation-cache.json → SQLite conversion
+4. **Restart determinism tests**: ensure SQLite-only hydration produces byte-identical cached blocks after process restarts
