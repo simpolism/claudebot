@@ -223,7 +223,7 @@ function setupBotEvents(instance: BotInstance): void {
     // ALWAYS append messages to in-memory store (for all in-scope messages)
     // Skip Discord's automatic thread starter messages so they never affect context
     if (isInScope(message) && message.type !== MessageType.ThreadStarterMessage) {
-      appendMessage(message);
+      await appendMessage(message);
 
       // Track bot-to-bot exchanges: reset counter on human messages
       const channelId = message.channel.id;

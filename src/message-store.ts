@@ -1,4 +1,4 @@
-import { Client, Message, Collection, MessageType } from 'discord.js';
+import { Attachment, Client, Message, Collection, MessageType } from 'discord.js';
 import { globalConfig, getMaxBotContextTokens } from './config';
 import * as db from './database';
 
@@ -40,6 +40,9 @@ const hydratedChannels = new Map<string, boolean>(); // Track lazy-loaded thread
 const resetThreads = new Map<string, Map<string, string>>(); // Track per-bot thread resets: threadId -> Map<botId, resetMessageId>
 const userNamesById = new Map<string, string>(); // Track best-known usernames for mention normalization
 
+const MAX_TEXT_ATTACHMENT_BYTES = 256 * 1024; // 256KB guardrail
+const TEXT_ATTACHMENT_EXTENSIONS = ['.txt'];
+const TEXT_ATTACHMENT_MIME_PREFIXES = ['text/plain'];
 // ---------- Helper Functions ----------
 
 /**
@@ -108,11 +111,95 @@ function rememberDiscordUsers(message: Message): void {
   });
 }
 
+function isTextAttachment(attachment: Attachment): boolean {
+  const contentType = attachment.contentType?.toLowerCase() ?? '';
+  if (TEXT_ATTACHMENT_MIME_PREFIXES.some((prefix) => contentType.startsWith(prefix))) {
+    return true;
+  }
+
+  const filename = attachment.name?.toLowerCase() ?? '';
+  return TEXT_ATTACHMENT_EXTENSIONS.some((ext) => filename.endsWith(ext));
+}
+
+async function fetchTextAttachment(attachment: Attachment): Promise<string | null> {
+  if (!attachment.url) {
+    return null;
+  }
+
+  if (attachment.size && attachment.size > MAX_TEXT_ATTACHMENT_BYTES) {
+    console.warn(
+      `[Attachment] Skipping ${attachment.name ?? attachment.id} - ${attachment.size} bytes exceeds ${MAX_TEXT_ATTACHMENT_BYTES} byte limit`,
+    );
+    return null;
+  }
+
+  if (typeof fetch !== 'function') {
+    console.warn('[Attachment] Global fetch() unavailable; cannot download text attachment');
+    return null;
+  }
+
+  try {
+    const response = await fetch(attachment.url);
+    if (!response.ok) {
+      console.warn(
+        `[Attachment] Failed to fetch ${attachment.name ?? attachment.id} - HTTP ${response.status}`,
+      );
+      return null;
+    }
+
+    const contentLengthHeader = response.headers.get('content-length');
+    if (
+      contentLengthHeader &&
+      Number(contentLengthHeader) > 0 &&
+      Number(contentLengthHeader) > MAX_TEXT_ATTACHMENT_BYTES
+    ) {
+      console.warn(
+        `[Attachment] Skipping ${attachment.name ?? attachment.id} - content-length ${contentLengthHeader} exceeds limit`,
+      );
+      return null;
+    }
+
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > MAX_TEXT_ATTACHMENT_BYTES) {
+      console.warn(
+        `[Attachment] Skipping ${attachment.name ?? attachment.id} - downloaded ${buffer.byteLength} bytes exceeds limit`,
+      );
+      return null;
+    }
+
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+    return text;
+  } catch (err) {
+    console.warn(
+      `[Attachment] Error fetching ${attachment.name ?? attachment.id}, skipping text inline`,
+      err,
+    );
+    return null;
+  }
+}
+
+async function getTextAttachmentSections(message: Message): Promise<string[]> {
+  if (message.attachments.size === 0) {
+    return [];
+  }
+
+  const sections: string[] = [];
+  for (const attachment of message.attachments.values()) {
+    if (!isTextAttachment(attachment)) continue;
+    const text = await fetchTextAttachment(attachment);
+    if (!text) continue;
+    const header = `[Attachment: ${attachment.name ?? 'file.txt'}]`;
+    const normalized = text.trim() || '(empty attachment)';
+    sections.push(`${header}\n${normalized}`);
+  }
+  return sections;
+}
+
 function estimateMessageTokens(authorName: string, content: string): number {
   return estimateTokens(`${authorName}: ${content}`) + 4; // +4 for message overhead
 }
 
-function messageToStored(message: Message): StoredMessage {
+async function messageToStored(message: Message): Promise<StoredMessage> {
   let content = message.content || '';
 
   // Append image URLs from attachments for vision context
@@ -123,6 +210,12 @@ function messageToStored(message: Message): StoredMessage {
     if (imageUrls.length > 0) {
       // If no text content, just use image markers; otherwise append with newline
       content = content ? content + '\n' + imageUrls.join('\n') : imageUrls.join('\n');
+    }
+
+    const textSections = await getTextAttachmentSections(message);
+    if (textSections.length > 0) {
+      const attachmentText = textSections.join('\n');
+      content = content ? `${content}\n${attachmentText}` : attachmentText;
     }
   }
 
@@ -188,13 +281,14 @@ export function appendStoredMessage(stored: StoredMessage): void {
   checkAndFreezeBlocks(channelId);
 }
 
-export function appendMessage(message: Message): void {
+export async function appendMessage(message: Message): Promise<void> {
   // Skip Discord's automatic thread starter messages (just the thread title)
   if (message.type === MessageType.ThreadStarterMessage) {
     return;
   }
   rememberDiscordUsers(message);
-  appendStoredMessage(messageToStored(message));
+  const stored = await messageToStored(message);
+  appendStoredMessage(stored);
 }
 
 export function getChannelMessages(channelId: string): StoredMessage[] {
@@ -964,7 +1058,7 @@ async function backfillChannelFromDiscord(
           continue;
         }
         rememberDiscordUsers(msg);
-        const stored = messageToStored(msg);
+        const stored = await messageToStored(msg);
         newMessages.push(stored);
         afterCursor = msg.id;
       }
@@ -1036,7 +1130,7 @@ async function backfillThreadFromDiscord(
             continue;
           }
           rememberDiscordUsers(msg);
-          const stored = messageToStored(msg);
+          const stored = await messageToStored(msg);
           newMessages.push(stored);
           afterCursor = msg.id;
         }
@@ -1109,7 +1203,7 @@ async function backfillThreadFromDiscord(
           continue;
         }
         rememberDiscordUsers(msg);
-        const stored = messageToStored(msg);
+        const stored = await messageToStored(msg);
         newMessages.push(stored);
         afterCursor = msg.id;
       }
@@ -1161,7 +1255,7 @@ async function fetchChannelHistory(
         continue;
       }
       rememberDiscordUsers(msg);
-      const stored = messageToStored(msg);
+      const stored = await messageToStored(msg);
       const tokens = estimateMessageTokens(stored.authorName, stored.content);
       batch.push(stored);
       batchTokens += tokens;

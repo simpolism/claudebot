@@ -60,7 +60,7 @@ function createMockMessage(type: MessageType, content: string, id: string): Mess
 }
 
 describe('Thread Starter Message Filtering', () => {
-  it('should NOT store thread starter messages', () => {
+  it('should NOT store thread starter messages', async () => {
     const store = getStoreModule();
 
     const threadStarterMsg = createMockMessage(
@@ -69,25 +69,25 @@ describe('Thread Starter Message Filtering', () => {
       '1001',
     );
 
-    store.appendMessage(threadStarterMsg);
+    await store.appendMessage(threadStarterMsg);
 
     const messages = store.getChannelMessages('channel-1');
     expect(messages).toHaveLength(0);
   });
 
-  it('should store regular messages normally', () => {
+  it('should store regular messages normally', async () => {
     const store = getStoreModule();
 
     const regularMsg = createMockMessage(MessageType.Default, 'Hello world!', '1002');
 
-    store.appendMessage(regularMsg);
+    await store.appendMessage(regularMsg);
 
     const messages = store.getChannelMessages('channel-1');
     expect(messages).toHaveLength(1);
     expect(messages[0]?.content).toBe('Hello world!');
   });
 
-  it('should filter thread starter messages but keep other messages', () => {
+  it('should filter thread starter messages but keep other messages', async () => {
     const store = getStoreModule();
 
     const msg1 = createMockMessage(MessageType.Default, 'First message', '1001');
@@ -98,9 +98,9 @@ describe('Thread Starter Message Filtering', () => {
     );
     const msg2 = createMockMessage(MessageType.Default, 'Third message', '1003');
 
-    store.appendMessage(msg1);
-    store.appendMessage(threadStarter);
-    store.appendMessage(msg2);
+    await store.appendMessage(msg1);
+    await store.appendMessage(threadStarter);
+    await store.appendMessage(msg2);
 
     const messages = store.getChannelMessages('channel-1');
     expect(messages).toHaveLength(2);

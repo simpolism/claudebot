@@ -20,6 +20,13 @@ type MockMessage = {
     globalName?: string;
     tag?: string;
   }>;
+  attachments?: Array<{
+    id: string;
+    name?: string;
+    contentType?: string;
+    size?: number;
+    url: string;
+  }>;
 };
 
 const TEST_DB_PATH = path.join(process.cwd(), process.env.TEST_DB_PATH);
@@ -41,6 +48,18 @@ function createMockDiscordMessage(msg: MockMessage, channelId: string): Message 
       ];
     }) ?? [];
   const mentionUsers = new Map(mentionEntries);
+  const attachmentEntries =
+    msg.attachments?.map((attachment) => [
+      attachment.id,
+      {
+        id: attachment.id,
+        name: attachment.name ?? `${attachment.id}.txt`,
+        contentType: attachment.contentType ?? 'text/plain',
+        size: attachment.size ?? 32,
+        url: attachment.url,
+      },
+    ]) ?? [];
+  const attachmentMap = new Map(attachmentEntries);
   return {
     id: msg.id,
     content: msg.content,
@@ -57,7 +76,7 @@ function createMockDiscordMessage(msg: MockMessage, channelId: string): Message 
       tag: `${displayName}#0001`,
     },
     createdTimestamp: parseInt(msg.id, 10) * 1000,
-    attachments: new Map(),
+    attachments: attachmentMap,
     mentions: { users: mentionUsers },
   } as unknown as Message;
 }
@@ -133,7 +152,7 @@ afterEach(() => {
 });
 
 describe('message-store', () => {
-  it('appends messages to in-memory storage', () => {
+  it('appends messages to in-memory storage', async () => {
     const store = getStoreModule();
     const msg1 = createMockDiscordMessage(
       { id: '1', content: 'Hello', authorId: 'alice' },
@@ -144,8 +163,8 @@ describe('message-store', () => {
       'chan',
     );
 
-    store.appendMessage(msg1);
-    store.appendMessage(msg2);
+    await store.appendMessage(msg1);
+    await store.appendMessage(msg2);
 
     const messages = store.getChannelMessages('chan');
     expect(messages).toHaveLength(2);
@@ -153,7 +172,7 @@ describe('message-store', () => {
     expect(messages[1]?.content).toBe('World');
   });
 
-  it('freezes blocks when token threshold reached', () => {
+  it('freezes blocks when token threshold reached', async () => {
     const store = getStoreModule();
 
     // Create enough messages to exceed 30k tokens (~120k chars at 4 chars/token)
@@ -164,7 +183,7 @@ describe('message-store', () => {
         { id: String(i), content: longContent, authorId: 'alice' },
         channelId,
       );
-      store.appendMessage(msg);
+      await store.appendMessage(msg);
     }
 
     const boundaries = store.getBlockBoundaries(channelId);
@@ -172,7 +191,7 @@ describe('message-store', () => {
     expect(boundaries[0]?.tokenCount).toBeGreaterThanOrEqual(30000);
   });
 
-  it('formats messages with bot name when author is bot', () => {
+  it('formats messages with bot name when author is bot', async () => {
     const store = getStoreModule();
     const channelId = 'chan';
 
@@ -181,14 +200,14 @@ describe('message-store', () => {
       { id: '1', content: 'I am bot', authorId: 'bot-user' },
       channelId,
     );
-    store.appendMessage(botMsg);
+    await store.appendMessage(botMsg);
 
     // User message
     const userMsg = createMockDiscordMessage(
       { id: '2', content: 'I am user', authorId: 'alice' },
       channelId,
     );
-    store.appendMessage(userMsg);
+    await store.appendMessage(userMsg);
 
     const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester');
 
@@ -197,7 +216,7 @@ describe('message-store', () => {
     expect(result.tail[1]).toBe('alice: I am user');
   });
 
-  it('normalizes mention markup to usernames in context output', () => {
+  it('normalizes mention markup to usernames in context output', async () => {
     const store = getStoreModule();
     const channelId = 'chan';
 
@@ -210,15 +229,15 @@ describe('message-store', () => {
       channelId,
     );
 
-    store.appendMessage(mentionedUser);
-    store.appendMessage(mentioner);
+    await store.appendMessage(mentionedUser);
+    await store.appendMessage(mentioner);
 
     const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester');
     const lastLine = result.tail[result.tail.length - 1];
     expect(lastLine).toBe('caller: @snav are you around?');
   });
 
-  it('records mention metadata so unknown users still render readable tags', () => {
+  it('records mention metadata so unknown users still render readable tags', async () => {
     const store = getStoreModule();
     const channelId = 'chan';
 
@@ -233,13 +252,61 @@ describe('message-store', () => {
       channelId,
     );
 
-    store.appendMessage(mentioner);
+    await store.appendMessage(mentioner);
 
     const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester');
     expect(result.tail[0]).toBe('caller: ping @snav');
   });
 
-  it('normalizes bot self-mentions to bot display name', () => {
+  it('inlines supported text attachments into stored content', async () => {
+    const store = getStoreModule();
+    const channelId = 'chan';
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('Attachment body', { status: 200, headers: { 'content-length': '16' } }));
+
+    const message = createMockDiscordMessage(
+      {
+        id: '1',
+        content: 'See attached',
+        authorId: 'alice',
+        attachments: [{ id: 'att-1', name: 'notes.txt', url: 'https://cdn.discord.test/att-1', size: 16 }],
+      },
+      channelId,
+    );
+
+    await store.appendMessage(message);
+    fetchSpy.mockRestore();
+
+    const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester');
+    expect(result.tail[0]).toContain('alice: See attached');
+    expect(result.tail[0]).toContain('[Attachment: notes.txt]');
+    expect(result.tail[0]).toContain('Attachment body');
+  });
+
+  it('skips text attachments when fetch fails', async () => {
+    const store = getStoreModule();
+    const channelId = 'chan';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));
+
+    const message = createMockDiscordMessage(
+      {
+        id: '1',
+        content: 'Please read',
+        authorId: 'alice',
+        attachments: [{ id: 'att-2', name: 'notes.txt', url: 'https://cdn.discord.test/att-2', size: 32 }],
+      },
+      channelId,
+    );
+
+    await store.appendMessage(message);
+    fetchSpy.mockRestore();
+
+    const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester');
+    expect(result.tail[0]).toBe('alice: Please read');
+  });
+
+  it('normalizes bot self-mentions to bot display name', async () => {
     const store = getStoreModule();
     const channelId = 'chan';
 
@@ -256,13 +323,13 @@ describe('message-store', () => {
       channelId,
     );
 
-    store.appendMessage(mentioner);
+    await store.appendMessage(mentioner);
 
     const result = store.getContext(channelId, 10000, botId, 'UnitTester');
     expect(result.tail[0]).toBe('caller: @UnitTester can you help?');
   });
 
-  it('trims oldest messages when over budget', () => {
+  it('trims oldest messages when over budget', async () => {
     const store = getStoreModule();
     const channelId = 'chan';
 
@@ -276,7 +343,7 @@ describe('message-store', () => {
         },
         channelId,
       );
-      store.appendMessage(msg);
+      await store.appendMessage(msg);
     }
 
     // Request with budget that fits ~3-4 messages (each ~20 tokens)
@@ -306,8 +373,8 @@ describe('buildConversationContext', () => {
       channelId,
     );
 
-    store.appendMessage(msg1);
-    store.appendMessage(msg2);
+    await store.appendMessage(msg1);
+    await store.appendMessage(msg2);
 
     const result = await context.buildConversationContext({
       channel: baseChannel({ id: channelId }),
@@ -351,14 +418,14 @@ describe('buildConversationContext', () => {
       { id: '1', content: 'User says hi', authorId: 'alice' },
       channelId,
     );
-    store.appendMessage(userMsg);
+    await store.appendMessage(userMsg);
 
     // Bot message (author ID matches bot)
     const botMsg = createMockDiscordMessage(
       { id: '2', content: 'Bot replies', authorId: 'bot-user' },
       channelId,
     );
-    store.appendMessage(botMsg);
+    await store.appendMessage(botMsg);
 
     const result = await context.buildConversationContext({
       channel: baseChannel({ id: channelId }),
