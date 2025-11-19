@@ -167,8 +167,10 @@ class AnthropicProvider implements AIProvider {
     }
 
     // Assistant prefill with proper format
+    // Anthropic rejects messages whose final content block ends with trailing whitespace,
+    // so avoid a trailing newline in the assistant prefill.
     const assistantPrefill = this.useVerticalFormat
-      ? `[${assistantName}]\n`
+      ? `[${assistantName}]`
       : `${assistantName}:`;
 
     messagesPayload.push({
@@ -258,7 +260,7 @@ class OpenAIProvider implements AIProvider {
 
     // Assistant prefill with proper format
     const assistantPrefill = this.useVerticalFormat
-      ? `[${assistantName}]\n`
+      ? `[${assistantName}]`
       : `${assistantName}:`;
 
     const messages: ChatCompletionMessageParam[] = [];
@@ -529,7 +531,7 @@ class GeminiProvider implements AIProvider {
 
     // Build multi-turn conversation with model prefill
     const assistantPrefill = this.useVerticalFormat
-      ? `[${assistantName}]\n`
+      ? `[${assistantName}]`
       : `${assistantName}:`;
 
     const contents = [

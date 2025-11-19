@@ -100,8 +100,10 @@ class AnthropicProvider {
             });
         }
         // Assistant prefill with proper format
+        // Anthropic rejects messages whose final content block ends with trailing whitespace,
+        // so avoid a trailing newline in the assistant prefill.
         const assistantPrefill = this.useVerticalFormat
-            ? `[${assistantName}]\n`
+            ? `[${assistantName}]`
             : `${assistantName}:`;
         messagesPayload.push({
             role: 'assistant',
@@ -173,7 +175,7 @@ class OpenAIProvider {
         const assistantName = botDisplayName || 'Assistant';
         // Assistant prefill with proper format
         const assistantPrefill = this.useVerticalFormat
-            ? `[${assistantName}]\n`
+            ? `[${assistantName}]`
             : `${assistantName}:`;
         const messages = [];
         if (trimmedSystemPrompt?.length > 0) {
@@ -408,7 +410,7 @@ class GeminiProvider {
         }
         // Build multi-turn conversation with model prefill
         const assistantPrefill = this.useVerticalFormat
-            ? `[${assistantName}]\n`
+            ? `[${assistantName}]`
             : `${assistantName}:`;
         const contents = [
             { role: 'user', parts: contentParts },
