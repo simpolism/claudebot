@@ -8,6 +8,7 @@ export interface BotConfig {
   provider: 'anthropic' | 'openai' | 'gemini';
   model: string;
   supportsImageBlocks?: boolean;
+  keepDoubleNewlines?: boolean;
 
   // For OpenAI-compatible providers (Groq, etc)
   openaiBaseUrl?: string;
@@ -37,6 +38,7 @@ interface BotConfigJSON {
   provider: 'anthropic' | 'openai' | 'gemini';
   model: string;
   supportsImageBlocks?: boolean;
+  keepDoubleNewlines?: boolean;
   openaiBaseUrl?: string;
   openaiApiKeyEnv?: string;
   geminiApiKeyEnv?: string;
@@ -88,6 +90,7 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       provider: jsonConfig.provider,
       model: jsonConfig.model,
       supportsImageBlocks: jsonConfig.supportsImageBlocks,
+      keepDoubleNewlines: jsonConfig.keepDoubleNewlines,
       openaiBaseUrl: jsonConfig.openaiBaseUrl,
       openaiApiKey: jsonConfig.openaiApiKeyEnv
         ? process.env[jsonConfig.openaiApiKeyEnv] || ''
@@ -139,6 +142,7 @@ export function resolveConfig(botConfig: BotConfig) {
     maxContextTokens: botConfig.maxContextTokens ?? globalConfig.maxContextTokens,
     maxTokens: botConfig.maxTokens ?? globalConfig.maxTokens,
     temperature: botConfig.temperature ?? globalConfig.temperature,
+    keepDoubleNewlines: botConfig.keepDoubleNewlines ?? false,
     geminiApiKey: botConfig.geminiApiKey ?? '',
     geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
     systemPrompt: botConfig.systemPrompt ?? '',

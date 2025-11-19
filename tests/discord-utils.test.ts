@@ -61,13 +61,18 @@ function buildChannel(
 }
 
 describe('chunkReplyText', () => {
-  it('splits long text while preserving words where possible', () => {
-    globalConfig.discordMessageLimit = 20;
-    const text = 'This is a long message that should be split cleanly';
+  it('splits long text at newline boundaries', () => {
+    globalConfig.discordMessageLimit = 12;
+    const text = ['line-one', 'line-two', 'line-three'].join('\n');
     const chunks = chunkReplyText(text);
-    expect(chunks.length).toBeGreaterThan(1);
-    expect(chunks[0]).toBe('This is a long');
-    expect(chunks[1]).toBe('message that should');
+    expect(chunks).toEqual(['line-one\n', 'line-two\n', 'line-three']);
+  });
+
+  it('falls back to hard splits when a single line exceeds the limit', () => {
+    globalConfig.discordMessageLimit = 5;
+    const text = 'abcdefghij';
+    const chunks = chunkReplyText(text);
+    expect(chunks).toEqual(['abcde', 'fghij']);
   });
 });
 

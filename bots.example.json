@@ -3,7 +3,8 @@
     "name": "Haiku4.5",
     "discordTokenEnv": "HAIKU_DISCORD_TOKEN",
     "provider": "anthropic",
-    "model": "claude-haiku-4-5"
+    "model": "claude-haiku-4-5",
+    "keepDoubleNewlines": true
   },
   {
     "name": "CL-KU",

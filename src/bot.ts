@@ -368,7 +368,11 @@ function setupBotEvents(instance: BotInstance): void {
 
         const formattedReplyText = convertOutputMentions(replyText, msg.channel, client);
 
-        const replyChunks = chunkReplyText(formattedReplyText);
+        const normalizedReplyText = resolved.keepDoubleNewlines
+          ? formattedReplyText
+          : formattedReplyText.replace(/\n{2,}/g, '\n');
+
+        const replyChunks = chunkReplyText(normalizedReplyText);
         const sentMessages: Message[] = [];
 
         // Handle image attachment if present
@@ -377,7 +381,7 @@ function setupBotEvents(instance: BotInstance): void {
           : undefined;
 
         console.log(
-          `[${config.name}] Response: ${replyText.length} chars, ${replyChunks.length} chunks, ` +
+          `[${config.name}] Response: ${normalizedReplyText.length} chars, ${replyChunks.length} chunks, ` +
             `imageData: ${aiReply.imageData ? `${aiReply.imageData.length} bytes` : 'none'}`,
         );
 
@@ -474,7 +478,7 @@ function setupBotEvents(instance: BotInstance): void {
 
         const totalDuration = Date.now() - receiveTime;
         console.log(
-          `[${config.name}] Replied in channel ${channelId} to ${msg.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${
+          `[${config.name}] Replied in channel ${channelId} to ${msg.author.tag} (${normalizedReplyText.length} chars, ${replyChunks.length} chunk${
             replyChunks.length === 1 ? '' : 's'
           }) in ${totalDuration}ms`,
         );

@@ -276,13 +276,16 @@ function setupBotEvents(instance) {
                 stopTyping();
                 stopTyping = null;
                 const formattedReplyText = (0, discord_utils_1.convertOutputMentions)(replyText, msg.channel, client);
-                const replyChunks = (0, discord_utils_1.chunkReplyText)(formattedReplyText);
+                const normalizedReplyText = resolved.keepDoubleNewlines
+                    ? formattedReplyText
+                    : formattedReplyText.replace(/\n{2,}/g, '\n');
+                const replyChunks = (0, discord_utils_1.chunkReplyText)(normalizedReplyText);
                 const sentMessages = [];
                 // Handle image attachment if present
                 const imageAttachment = aiReply.imageData
                     ? new discord_js_1.AttachmentBuilder(aiReply.imageData, { name: 'generated.png' })
                     : undefined;
-                console.log(`[${config.name}] Response: ${replyText.length} chars, ${replyChunks.length} chunks, ` +
+                console.log(`[${config.name}] Response: ${normalizedReplyText.length} chars, ${replyChunks.length} chunks, ` +
                     `imageData: ${aiReply.imageData ? `${aiReply.imageData.length} bytes` : 'none'}`);
                 if (replyChunks.length > 0) {
                     const [firstChunk, ...restChunks] = replyChunks;
@@ -366,7 +369,7 @@ function setupBotEvents(instance) {
                     console.log(`[${config.name}] Bot-to-bot exchange count: ${current + 1}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`);
                 }
                 const totalDuration = Date.now() - receiveTime;
-                console.log(`[${config.name}] Replied in channel ${channelId} to ${msg.author.tag} (${replyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'}) in ${totalDuration}ms`);
+                console.log(`[${config.name}] Replied in channel ${channelId} to ${msg.author.tag} (${normalizedReplyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'}) in ${totalDuration}ms`);
             }
             catch (err) {
                 console.error(`[${config.name}] Error handling message ${msg.id}:`, err);

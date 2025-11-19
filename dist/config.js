@@ -72,6 +72,7 @@ function loadBotConfigsFromJSON() {
             provider: jsonConfig.provider,
             model: jsonConfig.model,
             supportsImageBlocks: jsonConfig.supportsImageBlocks,
+            keepDoubleNewlines: jsonConfig.keepDoubleNewlines,
             openaiBaseUrl: jsonConfig.openaiBaseUrl,
             openaiApiKey: jsonConfig.openaiApiKeyEnv
                 ? process.env[jsonConfig.openaiApiKeyEnv] || ''
@@ -117,6 +118,7 @@ function resolveConfig(botConfig) {
         maxContextTokens: botConfig.maxContextTokens ?? exports.globalConfig.maxContextTokens,
         maxTokens: botConfig.maxTokens ?? exports.globalConfig.maxTokens,
         temperature: botConfig.temperature ?? exports.globalConfig.temperature,
+        keepDoubleNewlines: botConfig.keepDoubleNewlines ?? false,
         geminiApiKey: botConfig.geminiApiKey ?? '',
         geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
         systemPrompt: botConfig.systemPrompt ?? '',

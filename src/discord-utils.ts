@@ -2,34 +2,66 @@ import type { Client, Message } from 'discord.js';
 import { globalConfig } from './config';
 
 export function chunkReplyText(text: string): string[] {
-  if (text.length <= globalConfig.discordMessageLimit) {
+  const limit = globalConfig.discordMessageLimit;
+
+  if (text.length <= limit) {
     return [text];
   }
 
   const chunks: string[] = [];
-  let remaining = text;
+  const lines = text.split('\n');
+  let currentChunk = '';
 
-  while (remaining.length > 0) {
-    if (remaining.length <= globalConfig.discordMessageLimit) {
-      chunks.push(remaining);
-      break;
+  const flushCurrentChunk = () => {
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
+      currentChunk = '';
+    }
+  };
+
+  const appendSegment = (segment: string) => {
+    if (!segment) {
+      return;
     }
 
-    let sliceEnd = globalConfig.discordMessageLimit;
-    const newlineIndex = remaining.lastIndexOf('\n', sliceEnd);
-    const spaceIndex = remaining.lastIndexOf(' ', sliceEnd);
-    const breakIndex = Math.max(newlineIndex, spaceIndex);
-
-    if (breakIndex > sliceEnd * 0.5) {
-      sliceEnd = breakIndex;
+    if (segment.length > limit) {
+      flushCurrentChunk();
+      const pieces = splitSegment(segment, limit);
+      for (let i = 0; i < pieces.length - 1; i++) {
+        chunks.push(pieces[i]);
+      }
+      currentChunk = pieces[pieces.length - 1];
+      return;
     }
 
-    const chunk = remaining.slice(0, sliceEnd).trimEnd();
-    chunks.push(chunk);
-    remaining = remaining.slice(sliceEnd).trimStart();
+    if (currentChunk.length + segment.length > limit && currentChunk.length > 0) {
+      flushCurrentChunk();
+    }
+
+    currentChunk += segment;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const hasTrailingNewline = i < lines.length - 1;
+    const segment = hasTrailingNewline ? `${line}\n` : line;
+    appendSegment(segment);
   }
 
+  flushCurrentChunk();
   return chunks;
+}
+
+function splitSegment(segment: string, limit: number): string[] {
+  const pieces: string[] = [];
+  let start = 0;
+
+  while (start < segment.length) {
+    pieces.push(segment.slice(start, start + limit));
+    start += limit;
+  }
+
+  return pieces;
 }
 
 export function convertOutputMentions(

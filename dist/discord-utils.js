@@ -4,28 +4,54 @@ exports.chunkReplyText = chunkReplyText;
 exports.convertOutputMentions = convertOutputMentions;
 const config_1 = require("./config");
 function chunkReplyText(text) {
-    if (text.length <= config_1.globalConfig.discordMessageLimit) {
+    const limit = config_1.globalConfig.discordMessageLimit;
+    if (text.length <= limit) {
         return [text];
     }
     const chunks = [];
-    let remaining = text;
-    while (remaining.length > 0) {
-        if (remaining.length <= config_1.globalConfig.discordMessageLimit) {
-            chunks.push(remaining);
-            break;
+    const lines = text.split('\n');
+    let currentChunk = '';
+    const flushCurrentChunk = () => {
+        if (currentChunk.length > 0) {
+            chunks.push(currentChunk);
+            currentChunk = '';
         }
-        let sliceEnd = config_1.globalConfig.discordMessageLimit;
-        const newlineIndex = remaining.lastIndexOf('\n', sliceEnd);
-        const spaceIndex = remaining.lastIndexOf(' ', sliceEnd);
-        const breakIndex = Math.max(newlineIndex, spaceIndex);
-        if (breakIndex > sliceEnd * 0.5) {
-            sliceEnd = breakIndex;
+    };
+    const appendSegment = (segment) => {
+        if (!segment) {
+            return;
         }
-        const chunk = remaining.slice(0, sliceEnd).trimEnd();
-        chunks.push(chunk);
-        remaining = remaining.slice(sliceEnd).trimStart();
+        if (segment.length > limit) {
+            flushCurrentChunk();
+            const pieces = splitSegment(segment, limit);
+            for (let i = 0; i < pieces.length - 1; i++) {
+                chunks.push(pieces[i]);
+            }
+            currentChunk = pieces[pieces.length - 1];
+            return;
+        }
+        if (currentChunk.length + segment.length > limit && currentChunk.length > 0) {
+            flushCurrentChunk();
+        }
+        currentChunk += segment;
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const hasTrailingNewline = i < lines.length - 1;
+        const segment = hasTrailingNewline ? `${line}\n` : line;
+        appendSegment(segment);
     }
+    flushCurrentChunk();
     return chunks;
+}
+function splitSegment(segment, limit) {
+    const pieces = [];
+    let start = 0;
+    while (start < segment.length) {
+        pieces.push(segment.slice(start, start + limit));
+        start += limit;
+    }
+    return pieces;
 }
 function convertOutputMentions(text, channel, client) {
     if (!channel.isTextBased())
