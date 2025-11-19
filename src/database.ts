@@ -73,6 +73,24 @@ let db: Database.Database | null = null;
 const DB_PATH = process.env.TEST_DB_PATH
   ? path.join(process.cwd(), process.env.TEST_DB_PATH)
   : path.join(process.cwd(), 'claude-cache.sqlite');
+const LEGACY_CONVERSATION_CACHE_PATH = path.join(
+  process.cwd(),
+  'conversation-cache.json',
+);
+
+function removeLegacyConversationCache(): void {
+  try {
+    if (fs.existsSync(LEGACY_CONVERSATION_CACHE_PATH)) {
+      fs.rmSync(LEGACY_CONVERSATION_CACHE_PATH);
+      console.log('[Database] Removed legacy conversation-cache.json');
+    }
+  } catch (err) {
+    console.warn(
+      '[Database] Failed to remove legacy conversation-cache.json:',
+      err,
+    );
+  }
+}
 
 /**
  * Initialize the database connection and run migrations.
@@ -85,6 +103,7 @@ export function initializeDatabase(): void {
   }
 
   console.log(`[Database] Initializing at ${DB_PATH}`);
+  removeLegacyConversationCache();
 
   // Create database connection
   db = new Database(DB_PATH);
@@ -701,6 +720,41 @@ export function getDiscordMessageId(rowId: number): string | null {
   const stmt = db.prepare('SELECT id FROM messages WHERE row_id = ?');
   const result = stmt.get(rowId) as { id: string | null } | undefined;
   return result?.id ?? null;
+}
+
+/**
+ * Look up the row_id for a Discord message ID.
+ * Returns null if the message is not found.
+ */
+export function getRowIdForMessageId(messageId: string): number | null {
+  const db = getDb();
+
+  const stmt = db.prepare('SELECT row_id FROM messages WHERE id = ?');
+  const result = stmt.get(messageId) as { row_id: number | null } | undefined;
+  return result?.row_id ?? null;
+}
+
+/**
+ * Delete all messages for a channel/thread up to and including the provided row_id.
+ * Returns the number of rows removed.
+ */
+export function deleteMessagesUpToRowId(
+  channelId: string,
+  threadId: string | null,
+  maxRowId: number,
+): number {
+  if (maxRowId == null) {
+    return 0;
+  }
+
+  const db = getDb();
+  const stmt = db.prepare(`
+    DELETE FROM messages
+    WHERE channel_id = ? AND thread_id IS ? AND row_id <= ?
+  `);
+
+  const result = stmt.run(channelId, threadId, maxRowId);
+  return result.changes ?? 0;
 }
 
 // ============================================================================

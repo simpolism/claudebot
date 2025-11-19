@@ -72,6 +72,26 @@ CREATE INDEX idx_boundaries_last ON block_boundaries(channel_id, thread_id, last
 - `UNIQUE` constraint prevents duplicate blocks
 - `token_count` stored to avoid recalculating on restart
 
+### Table: `thread_metadata`
+
+Tracks reset boundaries so bots never reload messages that were explicitly cleared.
+
+```sql
+CREATE TABLE thread_metadata (
+  thread_id TEXT NOT NULL,
+  bot_id TEXT NOT NULL,             -- '__GLOBAL__' sentinel when reset applies to every bot
+  last_reset_row_id INTEGER NOT NULL,
+  last_reset_discord_message_id TEXT,
+  last_reset_at INTEGER NOT NULL,
+  PRIMARY KEY(thread_id, bot_id)
+);
+```
+
+**Key design decisions:**
+- Resets are recorded per bot; the special bot ID `__GLOBAL__` stores the last universal reset.
+- When `getThreadResetInfo(threadId, botId)` runs, it first checks the specific bot’s row and falls back to the `__GLOBAL__` sentinel.
+- Storing the Discord message ID lets downtime backfill resume strictly after the `/reset` marker, matching Anthropic cache boundaries byte-for-byte.
+
 ### Table: `schema_migrations`
 
 Tracks applied migrations for schema versioning.

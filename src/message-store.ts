@@ -22,6 +22,8 @@ export interface BlockBoundary {
   firstRowId?: number; // For DB-backed boundaries
   lastRowId?: number; // For DB-backed boundaries
   tokenCount: number;
+  threadId?: string | null;
+  channelId?: string;
 }
 
 // ---------- Constants ----------
@@ -495,6 +497,9 @@ function cleanupEvictedBlocks(channelId: string, numEvicted: number): void {
   );
 
   const threadIdForDb = (() => {
+    if (evictedBoundaries.length > 0 && evictedBoundaries[0]) {
+      return evictedBoundaries[0]!.threadId ?? null;
+    }
     if (messages && messages.length > 0) {
       return messages[0]!.threadId ?? null;
     }
@@ -506,6 +511,9 @@ function cleanupEvictedBlocks(channelId: string, numEvicted: number): void {
   }
 
   // Also trim messages that are no longer referenced
+  let maxRemovedRowId: number | null = null;
+  let lastRemovedMessageId: string | null = null;
+
   if (messages && messageIds && evictedBoundaries.length > 0) {
     const lastEvictedBoundary = evictedBoundaries[evictedBoundaries.length - 1];
     if (lastEvictedBoundary) {
@@ -519,6 +527,15 @@ function cleanupEvictedBlocks(channelId: string, numEvicted: number): void {
         // Update the deduplication set
         for (const msg of removedMessages) {
           messageIds.delete(msg.id);
+          if (typeof msg.rowId === 'number') {
+            if (maxRemovedRowId === null || msg.rowId > maxRemovedRowId) {
+              maxRemovedRowId = msg.rowId;
+            }
+          }
+        }
+
+        if (removedMessages.length > 0) {
+          lastRemovedMessageId = removedMessages[removedMessages.length - 1]!.id;
         }
 
         console.log(
@@ -528,6 +545,31 @@ function cleanupEvictedBlocks(channelId: string, numEvicted: number): void {
     }
   }
 
+  if (evictedBoundaries.length > 0) {
+    const lastEvictedBoundary = evictedBoundaries[evictedBoundaries.length - 1];
+    if (lastEvictedBoundary) {
+      if (maxRemovedRowId === null && typeof lastEvictedBoundary.lastRowId === 'number') {
+        maxRemovedRowId = lastEvictedBoundary.lastRowId;
+      }
+
+      if (maxRemovedRowId === null && lastRemovedMessageId) {
+        maxRemovedRowId = db.getRowIdForMessageId(lastRemovedMessageId);
+      }
+    }
+  }
+
+  if (maxRemovedRowId !== null) {
+    const deletedCount = db.deleteMessagesUpToRowId(channelId, threadIdForDb, maxRemovedRowId);
+    if (deletedCount > 0) {
+      console.log(
+        `[cleanupEvictedBlocks] Deleted ${deletedCount} messages from database for ${channelId} (<= row ${maxRemovedRowId})`,
+      );
+    }
+  } else if (evictedBoundaries.length > 0) {
+    console.warn(
+      `[cleanupEvictedBlocks] Unable to resolve row_id for evicted blocks in ${channelId}; database rows may remain until next freeze`,
+    );
+  }
 }
 
 // ---------- Block Freezing ----------
@@ -579,23 +621,23 @@ function freezeBlocks(channelId: string, options: FreezeOptions = {}): number {
       const firstMsg = messages[blockStartIdx];
       const lastMsg = messages[i];
       if (firstMsg && lastMsg) {
+        const isThread = firstMsg.threadId != null;
+        const boundaryThreadId = isThread ? firstMsg.threadId : null;
         const boundary: BlockBoundary = {
           firstMessageId: firstMsg.id,
           lastMessageId: lastMsg.id,
           firstRowId: firstMsg.rowId,
           lastRowId: lastMsg.rowId,
           tokenCount: accumulatedTokens,
+          threadId: boundaryThreadId,
+          channelId,
         };
         boundaries.push(boundary);
 
         try {
-          // Detect if this is a thread (messages have threadId set)
-          const isThread = firstMsg.threadId != null;
-          const threadIdForDb = isThread ? firstMsg.threadId : null;
-
           db.insertBlockBoundary({
             channelId,
-            threadId: threadIdForDb,
+            threadId: boundaryThreadId,
             firstMessageId: boundary.firstMessageId,
             lastMessageId: boundary.lastMessageId,
             firstRowId: boundary.firstRowId,
@@ -1180,7 +1222,13 @@ export function clearAll(): void {
   messageIdsByChannel.clear();
   blockBoundaries.clear();
   channelThreadIds.clear();
+  hydratedChannels.clear();
+  resetThreads.clear();
 }
+
+export const __testing = {
+  hydrateChannelFromDatabase,
+};
 
 export function getStats(): {
   channels: number;
