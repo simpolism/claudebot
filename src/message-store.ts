@@ -230,13 +230,15 @@ export function getContext(
     }
   }
 
+  const parentMessages =
+    isThreadContext && parentChannelId ? messagesByChannel.get(parentChannelId) ?? [] : [];
+
   // Build frozen blocks with their stored token counts
   // For threads: these are the parent's cached blocks (unless reset)
   const blockData: Array<{ text: string; tokens: number }> = [];
 
   if (isThreadContext && !isResetThread) {
     // For threads: Get parent channel messages to build parent blocks
-    const parentMessages = messagesByChannel.get(parentChannelId) ?? [];
     for (const boundary of currentBoundaries) {
       const blockMessages = getMessagesInRange(
         parentMessages,
@@ -259,31 +261,29 @@ export function getContext(
     }
   }
 
+  const tailData: Array<{ text: string; tokens: number }> = [];
+
+  // Include parent's tail for threads so forked contexts don't lose recent history
+  if (isThreadContext && !isResetThread && parentChannelId) {
+    const parentTailMessages = getTailMessagesAfterLastBoundary(
+      parentMessages,
+      currentBoundaries,
+    );
+    tailData.push(
+      ...buildTailDataFromMessages(parentTailMessages, botUserId, botDisplayName),
+    );
+  }
+
   // Build tail (messages after last frozen block)
   // For threads: all thread messages (threads don't have their own blocks yet)
   // For channels: messages after last block
   const tailMessages = isThreadContext
     ? currentMessages
-    : currentMessages.slice(
-        currentBoundaries.length > 0
-          ? currentMessages.findIndex(
-              (m) =>
-                m.id === currentBoundaries[currentBoundaries.length - 1]?.lastMessageId,
-            ) + 1
-          : 0,
-      );
+    : getTailMessagesAfterLastBoundary(currentMessages, currentBoundaries);
 
-  // Filter out meta-messages (commands and system responses)
-  const filteredTailMessages = tailMessages.filter((msg) => !isMetaMessage(msg.content));
-
-  const tailData: Array<{ text: string; tokens: number }> = [];
-
-  for (const msg of filteredTailMessages) {
-    const formatted = formatMessage(msg, botUserId, botDisplayName);
-    const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
-    const tokens = estimateMessageTokens(authorName, msg.content);
-    tailData.push({ text: formatted, tokens });
-  }
+  tailData.push(
+    ...buildTailDataFromMessages(tailMessages, botUserId, botDisplayName),
+  );
 
   // Calculate totals
   let totalTokens =
@@ -442,6 +442,39 @@ function formatMessages(
   // Filter out meta-messages (commands and system responses)
   const filtered = messages.filter((m) => !isMetaMessage(m.content));
   return filtered.map((m) => formatMessage(m, botUserId, botDisplayName)).join('\n');
+}
+
+function getTailMessagesAfterLastBoundary(
+  messages: StoredMessage[],
+  boundaries: BlockBoundary[],
+): StoredMessage[] {
+  if (boundaries.length === 0) {
+    return messages;
+  }
+
+  const lastBoundary = boundaries[boundaries.length - 1];
+  if (!lastBoundary) {
+    return messages;
+  }
+
+  const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
+  return lastBoundaryIdx !== -1 ? messages.slice(lastBoundaryIdx + 1) : messages;
+}
+
+function buildTailDataFromMessages(
+  messages: StoredMessage[],
+  botUserId: string,
+  botDisplayName: string,
+): Array<{ text: string; tokens: number }> {
+  const tailData: Array<{ text: string; tokens: number }> = [];
+  for (const msg of messages) {
+    if (isMetaMessage(msg.content)) continue;
+    const formatted = formatMessage(msg, botUserId, botDisplayName);
+    const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
+    const tokens = estimateMessageTokens(authorName, msg.content);
+    tailData.push({ text: formatted, tokens });
+  }
+  return tailData;
 }
 
 function estimateTokens(text: string): number {
