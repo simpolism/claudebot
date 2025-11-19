@@ -116,7 +116,7 @@ export const botConfigs: BotConfig[] = [
 
 Bots without valid tokens are automatically skipped.
 
-Set `supportsImageBlocks: true` for OpenAI-compatible bots that can accept multimodal `image_url` inputs (e.g., GPT-4o). Leave it `false`/omitted for models that only handle text. Use `useOpenAIPromptCaching: true` on models with OpenAI's prompt caching support so the bot reuses the same cached block layout as the Anthropic provider without managing explicit cache keys.
+Set `supportsImageBlocks: true` for OpenAI-compatible bots that can accept multimodal `image_url` inputs (e.g., GPT-4o). Leave it `false`/omitted for models that only handle text. Use `useOpenAIPromptCaching: true` on models with OpenAI's prompt caching support so the bot reuses the same cached block layout as the Anthropic provider without managing explicit cache keys. Some OpenAI-hosted models only accept `max_completion_tokens`; enable `useOpenAIMaxCompletionTokens: true` for those while leaving it `false` for Groq-style endpoints that still expect `max_tokens`.
 
 ---
 

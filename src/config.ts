@@ -9,6 +9,7 @@ export interface BotConfig {
   model: string;
   supportsImageBlocks?: boolean;
   useOpenAIPromptCaching?: boolean;
+  useOpenAIMaxCompletionTokens?: boolean;
   keepDoubleNewlines?: boolean;
 
   // For OpenAI-compatible providers (Groq, etc)
@@ -40,6 +41,7 @@ interface BotConfigJSON {
   model: string;
   supportsImageBlocks?: boolean;
   useOpenAIPromptCaching?: boolean;
+  useOpenAIMaxCompletionTokens?: boolean;
   keepDoubleNewlines?: boolean;
   openaiBaseUrl?: string;
   openaiApiKeyEnv?: string;
@@ -93,6 +95,7 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       model: jsonConfig.model,
       supportsImageBlocks: jsonConfig.supportsImageBlocks,
       useOpenAIPromptCaching: jsonConfig.useOpenAIPromptCaching,
+      useOpenAIMaxCompletionTokens: jsonConfig.useOpenAIMaxCompletionTokens,
       keepDoubleNewlines: jsonConfig.keepDoubleNewlines,
       openaiBaseUrl: jsonConfig.openaiBaseUrl,
       openaiApiKey: jsonConfig.openaiApiKeyEnv
@@ -150,6 +153,7 @@ export function resolveConfig(botConfig: BotConfig) {
     geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
     systemPrompt: botConfig.systemPrompt ?? '',
     useOpenAIPromptCaching: botConfig.useOpenAIPromptCaching ?? false,
+    useOpenAIMaxCompletionTokens: botConfig.useOpenAIMaxCompletionTokens ?? false,
   };
 }
 

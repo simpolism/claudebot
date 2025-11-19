@@ -5,6 +5,7 @@ import type {
   ChatCompletionChunk,
   ChatCompletionContentPart,
   ChatCompletionMessageParam,
+  ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions';
 import { GoogleGenAI } from '@google/genai';
 import {
@@ -30,6 +31,7 @@ type ProviderInitOptions = {
   supportsImageBlocks: boolean;
   useUserAssistantPrefill: boolean;
   useOpenAIPromptCaching: boolean;
+  useOpenAIMaxCompletionTokens: boolean;
   geminiModel: string;
   geminiApiKey: string;
   geminiOutputMode: 'text' | 'image' | 'both';
@@ -214,6 +216,7 @@ class OpenAIProvider implements AIProvider {
   private supportsImageBlocks: boolean;
   private useUserAssistantPrefill: boolean;
   private usePromptCaching: boolean;
+  private useMaxCompletionTokens: boolean;
 
   constructor(options: ProviderInitOptions) {
     const apiKey = options.openaiApiKey;
@@ -228,6 +231,7 @@ class OpenAIProvider implements AIProvider {
     this.supportsImageBlocks = options.supportsImageBlocks;
     this.useUserAssistantPrefill = options.useUserAssistantPrefill;
     this.usePromptCaching = options.useOpenAIPromptCaching;
+    this.useMaxCompletionTokens = options.useOpenAIMaxCompletionTokens;
     this.client = new OpenAI({
       apiKey,
       baseURL: options.openaiBaseURL,
@@ -338,13 +342,26 @@ class OpenAIProvider implements AIProvider {
       });
     }
 
-    const stream = await this.client.chat.completions.create({
+    type OpenAIStreamingParams = ChatCompletionCreateParamsStreaming & {
+      max_completion_tokens?: number;
+    };
+
+    const requestPayload: OpenAIStreamingParams = {
       model: this.model,
       temperature: this.temperature,
-      max_tokens: this.maxTokens,
       stream: true,
       messages,
-    });
+    };
+
+    if (this.useMaxCompletionTokens) {
+      requestPayload.max_completion_tokens = this.maxTokens;
+      requestPayload.max_tokens = undefined;
+    } else {
+      requestPayload.max_tokens = this.maxTokens;
+      requestPayload.max_completion_tokens = undefined;
+    }
+
+    const stream = await this.client.chat.completions.create(requestPayload);
 
     let aggregatedText = '';
     let abortedByGuard = false;

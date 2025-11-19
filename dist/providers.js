@@ -151,6 +151,7 @@ class OpenAIProvider {
         this.supportsImageBlocks = options.supportsImageBlocks;
         this.useUserAssistantPrefill = options.useUserAssistantPrefill;
         this.usePromptCaching = options.useOpenAIPromptCaching;
+        this.useMaxCompletionTokens = options.useOpenAIMaxCompletionTokens;
         this.client = new openai_1.default({
             apiKey,
             baseURL: options.openaiBaseURL,
@@ -249,13 +250,21 @@ class OpenAIProvider {
                 content: transcriptText + `\n${botDisplayName}:`,
             });
         }
-        const stream = await this.client.chat.completions.create({
+        const requestPayload = {
             model: this.model,
             temperature: this.temperature,
-            max_tokens: this.maxTokens,
             stream: true,
             messages,
-        });
+        };
+        if (this.useMaxCompletionTokens) {
+            requestPayload.max_completion_tokens = this.maxTokens;
+            requestPayload.max_tokens = undefined;
+        }
+        else {
+            requestPayload.max_tokens = this.maxTokens;
+            requestPayload.max_completion_tokens = undefined;
+        }
+        const stream = await this.client.chat.completions.create(requestPayload);
         let aggregatedText = '';
         let abortedByGuard = false;
         try {
