@@ -69,10 +69,7 @@ interface Migration {
 // ============================================================================
 
 let db: Database.Database | null = null;
-
-const DB_PATH = process.env.TEST_DB_PATH
-  ? path.join(process.cwd(), process.env.TEST_DB_PATH)
-  : path.join(process.cwd(), 'claude-cache.sqlite');
+let currentDbPath: string | null = null;
 const LEGACY_CONVERSATION_CACHE_PATH = path.join(
   process.cwd(),
   'conversation-cache.json',
@@ -96,17 +93,30 @@ function removeLegacyConversationCache(): void {
  * Initialize the database connection and run migrations.
  * Safe to call multiple times (idempotent).
  */
+function resolveDatabasePath(): string {
+  const override = process.env.TEST_DB_PATH;
+  if (override) {
+    return path.isAbsolute(override)
+      ? override
+      : path.join(process.cwd(), override);
+  }
+  return path.join(process.cwd(), 'claude-cache.sqlite');
+}
+
 export function initializeDatabase(): void {
   if (db) {
     console.log('[Database] Already initialized');
     return;
   }
 
-  console.log(`[Database] Initializing at ${DB_PATH}`);
+  const dbPath = resolveDatabasePath();
+  currentDbPath = dbPath;
+
+  console.log(`[Database] Initializing at ${dbPath}`);
   removeLegacyConversationCache();
 
   // Create database connection
-  db = new Database(DB_PATH);
+  db = new Database(dbPath);
 
   // Enable WAL mode for better concurrency
   db.pragma('journal_mode = WAL');
@@ -131,6 +141,7 @@ export function closeDatabase(): void {
   if (db) {
     db.close();
     db = null;
+    currentDbPath = null;
     console.log('[Database] Closed');
   }
 }
@@ -948,8 +959,10 @@ export function getDatabaseStats(): {
   ).count;
 
   let databaseSizeBytes = 0;
+  const statsPath = currentDbPath ?? resolveDatabasePath();
+
   try {
-    const stats = fs.statSync(DB_PATH);
+    const stats = fs.statSync(statsPath);
     databaseSizeBytes = stats.size;
   } catch (err) {
     // File might not exist yet
