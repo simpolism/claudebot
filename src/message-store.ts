@@ -759,11 +759,15 @@ export async function lazyLoadThread(
   console.log(`[LazyLoad] Loading thread ${threadId} from database for bot ${botUserId}...`);
 
   try {
+    // IMPORTANT: Get existing in-memory messages BEFORE loading from DB
+    // These may have been appended via appendMessage() before lazy load triggered
+    const existingMessages = messagesByChannel.get(threadId) ?? [];
+
     // Check if thread was reset for this specific bot
     const resetInfo = db.getThreadResetInfo(threadId, botUserId);
 
     // Always load ALL messages from database (shared storage across bots)
-    const messages = db.getMessages(threadId, threadId);
+    const dbMessages = db.getMessages(threadId, threadId);
     const boundaries = db.getBoundaries(threadId, threadId);
 
     // If this bot has a reset boundary, mark it in memory for filtering during getContext
@@ -774,14 +778,24 @@ export async function lazyLoadThread(
       markThreadReset(threadId, botUserId, resetInfo.lastResetDiscordMessageId);
     }
 
-    // Initialize in-memory storage
+    // Merge database messages with existing in-memory messages
+    // This prevents losing tail messages that were appended before lazy load
+    const dbMessageIds = new Set(dbMessages.map((m) => m.id));
+    const newInMemoryMessages = existingMessages.filter((m) => !dbMessageIds.has(m.id));
+
+    const mergedMessages = [...dbMessages, ...newInMemoryMessages];
+
+    // Sort by timestamp to maintain chronological order
+    mergedMessages.sort((a, b) => a.timestamp - b.timestamp);
+
+    // Initialize in-memory storage with merged messages
     ensureChannelInitialized(threadId);
-    messagesByChannel.set(threadId, messages);
-    messageIdsByChannel.set(threadId, new Set(messages.map((m) => m.id)));
+    messagesByChannel.set(threadId, mergedMessages);
+    messageIdsByChannel.set(threadId, new Set(mergedMessages.map((m) => m.id)));
     blockBoundaries.set(threadId, boundaries);
 
     console.log(
-      `[LazyLoad] Loaded ${messages.length} messages and ${boundaries.length} boundaries from DB`,
+      `[LazyLoad] Loaded ${dbMessages.length} messages from DB, merged with ${newInMemoryMessages.length} in-memory messages (total: ${mergedMessages.length})`,
     );
 
     // Backfill any messages missed during downtime from Discord
