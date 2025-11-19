@@ -4,7 +4,7 @@ Ideas for enhancing the bot framework while respecting IMP (Immanent Mind Plural
 
 ## First Steps
 
-- txt file support
+- Forking from specific points
 - Turn-taking version of Haiku 4.5.
 
 ## Non-Verbal Presence
