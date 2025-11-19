@@ -6,7 +6,7 @@
 process.env.TEST_DB_PATH = 'test-claude-cache.sqlite';
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Client, Message } from 'discord.js';
+import { Client, Message, MessageType } from 'discord.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as db from '../src/database';
@@ -48,6 +48,7 @@ const createMockMessage = (data: {
   return {
     id: data.id,
     content: data.content,
+    type: MessageType.Default,
     author: {
       id: data.authorId,
       username: data.authorName,

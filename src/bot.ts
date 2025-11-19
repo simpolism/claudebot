@@ -4,6 +4,7 @@ import {
   Events,
   GatewayIntentBits,
   Message,
+  MessageType,
   Partials,
   AttachmentBuilder,
 } from 'discord.js';
@@ -220,7 +221,8 @@ function setupBotEvents(instance: BotInstance): void {
     const isResetCommand = content === '/reset' || content.startsWith('/reset ');
 
     // ALWAYS append messages to in-memory store (for all in-scope messages)
-    if (isInScope(message)) {
+    // Skip Discord's automatic thread starter messages so they never affect context
+    if (isInScope(message) && message.type !== MessageType.ThreadStarterMessage) {
       appendMessage(message);
 
       // Track bot-to-bot exchanges: reset counter on human messages

@@ -1,4 +1,4 @@
-import { Client, Message, Collection } from 'discord.js';
+import { Client, Message, Collection, MessageType } from 'discord.js';
 import { globalConfig, getMaxBotContextTokens } from './config';
 import * as db from './database';
 
@@ -168,6 +168,10 @@ export function appendStoredMessage(stored: StoredMessage): void {
 }
 
 export function appendMessage(message: Message): void {
+  // Skip Discord's automatic thread starter messages (just the thread title)
+  if (message.type === MessageType.ThreadStarterMessage) {
+    return;
+  }
   appendStoredMessage(messageToStored(message));
 }
 
@@ -899,6 +903,10 @@ async function backfillChannelFromDiscord(
       );
 
       for (const msg of sorted) {
+        // Skip thread starter messages so thread hydration stays byte-identical
+        if (msg.type === MessageType.ThreadStarterMessage) {
+          continue;
+        }
         const stored = messageToStored(msg);
         newMessages.push(stored);
         afterCursor = msg.id;
@@ -967,6 +975,9 @@ async function backfillThreadFromDiscord(
           );
 
           for (const msg of sorted) {
+            if (msg.type === MessageType.ThreadStarterMessage) {
+              continue;
+            }
             const stored = messageToStored(msg);
             newMessages.push(stored);
             afterCursor = msg.id;
@@ -1036,6 +1047,9 @@ async function backfillThreadFromDiscord(
       );
 
       for (const msg of sorted) {
+        if (msg.type === MessageType.ThreadStarterMessage) {
+          continue;
+        }
         const stored = messageToStored(msg);
         newMessages.push(stored);
         afterCursor = msg.id;
@@ -1084,6 +1098,9 @@ async function fetchChannelHistory(
     let batchTokens = 0;
 
     for (const msg of sorted) {
+      if (msg.type === MessageType.ThreadStarterMessage) {
+        continue;
+      }
       const stored = messageToStored(msg);
       const tokens = estimateMessageTokens(stored.authorName, stored.content);
       batch.push(stored);

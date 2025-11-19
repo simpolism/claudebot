@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.__testing = void 0;
 exports.appendStoredMessage = appendStoredMessage;
 exports.appendMessage = appendMessage;
 exports.getChannelMessages = getChannelMessages;
@@ -45,6 +46,7 @@ exports.clearThread = clearThread;
 exports.clearAll = clearAll;
 exports.getStats = getStats;
 exports.getChannelSpeakers = getChannelSpeakers;
+const discord_js_1 = require("discord.js");
 const config_1 = require("./config");
 const db = __importStar(require("./database"));
 // ---------- Constants ----------
@@ -166,6 +168,10 @@ function appendStoredMessage(stored) {
     checkAndFreezeBlocks(channelId);
 }
 function appendMessage(message) {
+    // Skip Discord's automatic thread starter messages (just the thread title)
+    if (message.type === discord_js_1.MessageType.ThreadStarterMessage) {
+        return;
+    }
     appendStoredMessage(messageToStored(message));
 }
 function getChannelMessages(channelId) {
@@ -384,6 +390,9 @@ function cleanupEvictedBlocks(channelId, numEvicted) {
     const evictedBoundaries = boundaries.splice(0, numEvicted);
     console.log(`[cleanupEvictedBlocks] Removed ${evictedBoundaries.length} oldest blocks from ${channelId}`);
     const threadIdForDb = (() => {
+        if (evictedBoundaries.length > 0 && evictedBoundaries[0]) {
+            return evictedBoundaries[0].threadId ?? null;
+        }
         if (messages && messages.length > 0) {
             return messages[0].threadId ?? null;
         }
@@ -393,6 +402,8 @@ function cleanupEvictedBlocks(channelId, numEvicted) {
         db.deleteOldestBlockBoundaries(channelId, threadIdForDb, evictedBoundaries.length);
     }
     // Also trim messages that are no longer referenced
+    let maxRemovedRowId = null;
+    let lastRemovedMessageId = null;
     if (messages && messageIds && evictedBoundaries.length > 0) {
         const lastEvictedBoundary = evictedBoundaries[evictedBoundaries.length - 1];
         if (lastEvictedBoundary) {
@@ -403,10 +414,38 @@ function cleanupEvictedBlocks(channelId, numEvicted) {
                 // Update the deduplication set
                 for (const msg of removedMessages) {
                     messageIds.delete(msg.id);
+                    if (typeof msg.rowId === 'number') {
+                        if (maxRemovedRowId === null || msg.rowId > maxRemovedRowId) {
+                            maxRemovedRowId = msg.rowId;
+                        }
+                    }
+                }
+                if (removedMessages.length > 0) {
+                    lastRemovedMessageId = removedMessages[removedMessages.length - 1].id;
                 }
                 console.log(`[cleanupEvictedBlocks] Trimmed ${removedMessages.length} messages from memory for ${channelId}`);
             }
         }
+    }
+    if (evictedBoundaries.length > 0) {
+        const lastEvictedBoundary = evictedBoundaries[evictedBoundaries.length - 1];
+        if (lastEvictedBoundary) {
+            if (maxRemovedRowId === null && typeof lastEvictedBoundary.lastRowId === 'number') {
+                maxRemovedRowId = lastEvictedBoundary.lastRowId;
+            }
+            if (maxRemovedRowId === null && lastRemovedMessageId) {
+                maxRemovedRowId = db.getRowIdForMessageId(lastRemovedMessageId);
+            }
+        }
+    }
+    if (maxRemovedRowId !== null) {
+        const deletedCount = db.deleteMessagesUpToRowId(channelId, threadIdForDb, maxRemovedRowId);
+        if (deletedCount > 0) {
+            console.log(`[cleanupEvictedBlocks] Deleted ${deletedCount} messages from database for ${channelId} (<= row ${maxRemovedRowId})`);
+        }
+    }
+    else if (evictedBoundaries.length > 0) {
+        console.warn(`[cleanupEvictedBlocks] Unable to resolve row_id for evicted blocks in ${channelId}; database rows may remain until next freeze`);
     }
 }
 function freezeBlocks(channelId, options = {}) {
@@ -444,21 +483,22 @@ function freezeBlocks(channelId, options = {}) {
             const firstMsg = messages[blockStartIdx];
             const lastMsg = messages[i];
             if (firstMsg && lastMsg) {
+                const isThread = firstMsg.threadId != null;
+                const boundaryThreadId = isThread ? firstMsg.threadId : null;
                 const boundary = {
                     firstMessageId: firstMsg.id,
                     lastMessageId: lastMsg.id,
                     firstRowId: firstMsg.rowId,
                     lastRowId: lastMsg.rowId,
                     tokenCount: accumulatedTokens,
+                    threadId: boundaryThreadId,
+                    channelId,
                 };
                 boundaries.push(boundary);
                 try {
-                    // Detect if this is a thread (messages have threadId set)
-                    const isThread = firstMsg.threadId != null;
-                    const threadIdForDb = isThread ? firstMsg.threadId : null;
                     db.insertBlockBoundary({
                         channelId,
-                        threadId: threadIdForDb,
+                        threadId: boundaryThreadId,
                         firstMessageId: boundary.firstMessageId,
                         lastMessageId: boundary.lastMessageId,
                         firstRowId: boundary.firstRowId,
@@ -646,6 +686,10 @@ async function backfillChannelFromDiscord(channel, channelId, afterDiscordMessag
                 break;
             const sorted = [...fetched.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1);
             for (const msg of sorted) {
+                // Skip thread starter messages so thread hydration stays byte-identical
+                if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
+                    continue;
+                }
                 const stored = messageToStored(msg);
                 newMessages.push(stored);
                 afterCursor = msg.id;
@@ -696,6 +740,9 @@ async function backfillThreadFromDiscord(threadId, client, botUserId) {
                         break;
                     const sorted = [...fetched.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1);
                     for (const msg of sorted) {
+                        if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
+                            continue;
+                        }
                         const stored = messageToStored(msg);
                         newMessages.push(stored);
                         afterCursor = msg.id;
@@ -746,6 +793,9 @@ async function backfillThreadFromDiscord(threadId, client, botUserId) {
             // Sort oldest to newest
             const sorted = [...fetched.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1);
             for (const msg of sorted) {
+                if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
+                    continue;
+                }
                 const stored = messageToStored(msg);
                 newMessages.push(stored);
                 afterCursor = msg.id;
@@ -782,6 +832,9 @@ async function fetchChannelHistory(channel, maxTokens, mustIncludeMessageId) {
         const batch = [];
         let batchTokens = 0;
         for (const msg of sorted) {
+            if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
+                continue;
+            }
             const stored = messageToStored(msg);
             const tokens = estimateMessageTokens(stored.authorName, stored.content);
             batch.push(stored);
@@ -893,7 +946,12 @@ function clearAll() {
     messageIdsByChannel.clear();
     blockBoundaries.clear();
     channelThreadIds.clear();
+    hydratedChannels.clear();
+    resetThreads.clear();
 }
+exports.__testing = {
+    hydrateChannelFromDatabase,
+};
 function getStats() {
     let totalMessages = 0;
     let totalBlocks = 0;
