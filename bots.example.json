@@ -17,7 +17,7 @@
     "discordTokenEnv": "KIMI_DISCORD_TOKEN",
     "provider": "openai",
     "model": "moonshotai/kimi-k2-instruct-0905",
-    "useOpenAIPromptCaching": true,
+    "useOpenAIEndpointOptimizations": true,
     "openaiBaseUrl": "https://api.groq.com/openai/v1",
     "openaiApiKeyEnv": "GROQ_API_KEY"
   },

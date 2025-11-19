@@ -72,8 +72,7 @@ function loadBotConfigsFromJSON() {
             provider: jsonConfig.provider,
             model: jsonConfig.model,
             supportsImageBlocks: jsonConfig.supportsImageBlocks,
-            useOpenAIPromptCaching: jsonConfig.useOpenAIPromptCaching,
-            useOpenAIMaxCompletionTokens: jsonConfig.useOpenAIMaxCompletionTokens,
+            useOpenAIEndpointOptimizations: jsonConfig.useOpenAIEndpointOptimizations,
             keepDoubleNewlines: jsonConfig.keepDoubleNewlines,
             openaiBaseUrl: jsonConfig.openaiBaseUrl,
             openaiApiKey: jsonConfig.openaiApiKeyEnv
@@ -124,8 +123,7 @@ function resolveConfig(botConfig) {
         geminiApiKey: botConfig.geminiApiKey ?? '',
         geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
         systemPrompt: botConfig.systemPrompt ?? '',
-        useOpenAIPromptCaching: botConfig.useOpenAIPromptCaching ?? false,
-        useOpenAIMaxCompletionTokens: botConfig.useOpenAIMaxCompletionTokens ?? false,
+        useOpenAIEndpointOptimizations: botConfig.useOpenAIEndpointOptimizations ?? false,
     };
 }
 // Get the maximum context tokens across all active bots

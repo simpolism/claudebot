@@ -60,8 +60,7 @@ describe('OpenAIProvider message layout', () => {
       openaiBaseURL: '',
       openaiApiKey: 'key',
       supportsImageBlocks: false,
-      useOpenAIPromptCaching: false,
-      useOpenAIMaxCompletionTokens: false,
+      useOpenAIEndpointOptimizations: false,
     });
 
     await provider.send({
@@ -99,8 +98,7 @@ describe('OpenAIProvider message layout', () => {
       openaiBaseURL: '',
       openaiApiKey: 'key',
       supportsImageBlocks: true,
-      useOpenAIPromptCaching: true,
-      useOpenAIMaxCompletionTokens: false,
+      useOpenAIEndpointOptimizations: true,
     });
 
     await provider.send({
@@ -141,9 +139,33 @@ describe('OpenAIProvider message layout', () => {
       role: 'assistant',
       content: 'Bot:',
     });
+    const payload = createMock.mock.calls[0][0];
+    expect(payload.max_completion_tokens).toBe(256);
+    expect(payload.max_tokens).toBeUndefined();
   });
 
-  it('uses max_completion_tokens when flag is enabled', async () => {
+  it('strips echoed assistant prefill when caching flag is set', async () => {
+    const streamWithPrefill = {
+      controller: {
+        abort: () => {},
+      },
+      async *[Symbol.asyncIterator]() {
+        yield {
+          ...fakeChunk,
+          choices: [
+            {
+              index: 0,
+              finish_reason: null,
+              delta: {
+                content: 'Bot:\nHello world',
+              },
+            },
+          ],
+        };
+      },
+    };
+    createMock.mockResolvedValue(streamWithPrefill);
+
     const { createAIProvider } = await import('../src/providers');
     const provider = createAIProvider({
       provider: 'openai',
@@ -158,11 +180,10 @@ describe('OpenAIProvider message layout', () => {
       openaiBaseURL: '',
       openaiApiKey: 'key',
       supportsImageBlocks: false,
-      useOpenAIPromptCaching: false,
-      useOpenAIMaxCompletionTokens: true,
+      useOpenAIEndpointOptimizations: true,
     });
 
-    await provider.send({
+    const response = await provider.send({
       conversationData: {
         cachedBlocks: [],
         tail: [],
@@ -172,9 +193,7 @@ describe('OpenAIProvider message layout', () => {
       otherSpeakers: [],
     });
 
-    const payload = createMock.mock.calls[0][0];
-    expect(payload.max_completion_tokens).toBe(123);
-    expect(payload.max_tokens).toBeUndefined();
+    expect(response.text).toBe('Hello world');
   });
 
   it('sends user transcript when images are enabled', async () => {
@@ -192,8 +211,7 @@ describe('OpenAIProvider message layout', () => {
       openaiBaseURL: '',
       openaiApiKey: 'key',
       supportsImageBlocks: true,
-      useOpenAIPromptCaching: false,
-      useOpenAIMaxCompletionTokens: false,
+      useOpenAIEndpointOptimizations: false,
     });
 
     await provider.send({
@@ -265,8 +283,7 @@ describe('OpenAIProvider message layout', () => {
       openaiBaseURL: '',
       openaiApiKey: 'key',
       supportsImageBlocks: false,
-      useOpenAIPromptCaching: false,
-      useOpenAIMaxCompletionTokens: false,
+      useOpenAIEndpointOptimizations: false,
     });
 
     try {

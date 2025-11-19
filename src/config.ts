@@ -8,8 +8,7 @@ export interface BotConfig {
   provider: 'anthropic' | 'openai' | 'gemini';
   model: string;
   supportsImageBlocks?: boolean;
-  useOpenAIPromptCaching?: boolean;
-  useOpenAIMaxCompletionTokens?: boolean;
+  useOpenAIEndpointOptimizations?: boolean;
   keepDoubleNewlines?: boolean;
 
   // For OpenAI-compatible providers (Groq, etc)
@@ -40,8 +39,7 @@ interface BotConfigJSON {
   provider: 'anthropic' | 'openai' | 'gemini';
   model: string;
   supportsImageBlocks?: boolean;
-  useOpenAIPromptCaching?: boolean;
-  useOpenAIMaxCompletionTokens?: boolean;
+  useOpenAIEndpointOptimizations?: boolean;
   keepDoubleNewlines?: boolean;
   openaiBaseUrl?: string;
   openaiApiKeyEnv?: string;
@@ -94,8 +92,7 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       provider: jsonConfig.provider,
       model: jsonConfig.model,
       supportsImageBlocks: jsonConfig.supportsImageBlocks,
-      useOpenAIPromptCaching: jsonConfig.useOpenAIPromptCaching,
-      useOpenAIMaxCompletionTokens: jsonConfig.useOpenAIMaxCompletionTokens,
+      useOpenAIEndpointOptimizations: jsonConfig.useOpenAIEndpointOptimizations,
       keepDoubleNewlines: jsonConfig.keepDoubleNewlines,
       openaiBaseUrl: jsonConfig.openaiBaseUrl,
       openaiApiKey: jsonConfig.openaiApiKeyEnv
@@ -152,8 +149,7 @@ export function resolveConfig(botConfig: BotConfig) {
     geminiApiKey: botConfig.geminiApiKey ?? '',
     geminiOutputMode: botConfig.geminiOutputMode ?? 'both',
     systemPrompt: botConfig.systemPrompt ?? '',
-    useOpenAIPromptCaching: botConfig.useOpenAIPromptCaching ?? false,
-    useOpenAIMaxCompletionTokens: botConfig.useOpenAIMaxCompletionTokens ?? false,
+    useOpenAIEndpointOptimizations: botConfig.useOpenAIEndpointOptimizations ?? false,
   };
 }
 

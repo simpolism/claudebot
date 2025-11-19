@@ -150,8 +150,7 @@ class OpenAIProvider {
         this.model = options.openaiModel;
         this.supportsImageBlocks = options.supportsImageBlocks;
         this.useUserAssistantPrefill = options.useUserAssistantPrefill;
-        this.usePromptCaching = options.useOpenAIPromptCaching;
-        this.useMaxCompletionTokens = options.useOpenAIMaxCompletionTokens;
+        this.usePromptCaching = options.useOpenAIEndpointOptimizations;
         this.client = new openai_1.default({
             apiKey,
             baseURL: options.openaiBaseURL,
@@ -256,7 +255,7 @@ class OpenAIProvider {
             stream: true,
             messages,
         };
-        if (this.useMaxCompletionTokens) {
+        if (this.usePromptCaching) {
             requestPayload.max_completion_tokens = this.maxTokens;
             requestPayload.max_tokens = undefined;
         }
@@ -288,6 +287,9 @@ class OpenAIProvider {
             if (!(abortedByGuard && isAbortError(err))) {
                 throw err;
             }
+        }
+        if (this.usePromptCaching) {
+            aggregatedText = stripAssistantPrefillPrefix(aggregatedText, botDisplayName);
         }
         return finalizeResponse(aggregatedText, guard);
     }
@@ -512,6 +514,12 @@ function buildFragmentationRegex(names) {
         return null;
     const escapedNames = names.map(escapeRegExp).join('|');
     return new RegExp(`(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`, 'gi');
+}
+function stripAssistantPrefillPrefix(text, botName) {
+    if (!text)
+        return text;
+    const prefixRegex = new RegExp(`^${escapeRegExp(botName)}:\\s*`, 'i');
+    return text.replace(prefixRegex, '').trimStart();
 }
 function isAbortError(error) {
     return error instanceof Error && error.name === 'AbortError';

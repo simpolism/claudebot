@@ -30,8 +30,7 @@ type ProviderInitOptions = {
   openaiApiKey: string;
   supportsImageBlocks: boolean;
   useUserAssistantPrefill: boolean;
-  useOpenAIPromptCaching: boolean;
-  useOpenAIMaxCompletionTokens: boolean;
+  useOpenAIEndpointOptimizations: boolean;
   geminiModel: string;
   geminiApiKey: string;
   geminiOutputMode: 'text' | 'image' | 'both';
@@ -216,7 +215,6 @@ class OpenAIProvider implements AIProvider {
   private supportsImageBlocks: boolean;
   private useUserAssistantPrefill: boolean;
   private usePromptCaching: boolean;
-  private useMaxCompletionTokens: boolean;
 
   constructor(options: ProviderInitOptions) {
     const apiKey = options.openaiApiKey;
@@ -230,8 +228,7 @@ class OpenAIProvider implements AIProvider {
     this.model = options.openaiModel;
     this.supportsImageBlocks = options.supportsImageBlocks;
     this.useUserAssistantPrefill = options.useUserAssistantPrefill;
-    this.usePromptCaching = options.useOpenAIPromptCaching;
-    this.useMaxCompletionTokens = options.useOpenAIMaxCompletionTokens;
+    this.usePromptCaching = options.useOpenAIEndpointOptimizations;
     this.client = new OpenAI({
       apiKey,
       baseURL: options.openaiBaseURL,
@@ -353,7 +350,7 @@ class OpenAIProvider implements AIProvider {
       messages,
     };
 
-    if (this.useMaxCompletionTokens) {
+    if (this.usePromptCaching) {
       requestPayload.max_completion_tokens = this.maxTokens;
       requestPayload.max_tokens = undefined;
     } else {
@@ -384,6 +381,10 @@ class OpenAIProvider implements AIProvider {
       if (!(abortedByGuard && isAbortError(err))) {
         throw err;
       }
+    }
+
+    if (this.usePromptCaching) {
+      aggregatedText = stripAssistantPrefillPrefix(aggregatedText, botDisplayName);
     }
 
     return finalizeResponse(aggregatedText, guard);
@@ -648,6 +649,12 @@ function buildFragmentationRegex(names: string[]): RegExp | null {
   if (names.length === 0) return null;
   const escapedNames = names.map(escapeRegExp).join('|');
   return new RegExp(`(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`, 'gi');
+}
+
+function stripAssistantPrefillPrefix(text: string, botName: string): string {
+  if (!text) return text;
+  const prefixRegex = new RegExp(`^${escapeRegExp(botName)}:\\s*`, 'i');
+  return text.replace(prefixRegex, '').trimStart();
 }
 
 function isAbortError(error: unknown): boolean {
