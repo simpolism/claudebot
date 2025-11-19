@@ -186,7 +186,11 @@ async function getTextAttachmentSections(message) {
     }
     return sections;
 }
-function estimateMessageTokens(authorName, content) {
+function estimateMessageTokens(authorName, content, useVerticalFormat = false) {
+    if (useVerticalFormat) {
+        // Vertical format: [Name]\nContent
+        return estimateTokens(`[${authorName}]\n${content}`) + 4; // +4 for message overhead
+    }
     return estimateTokens(`${authorName}: ${content}`) + 4; // +4 for message overhead
 }
 async function messageToStored(message) {
@@ -271,7 +275,7 @@ function getChannelMessages(channelId) {
 function getBlockBoundaries(channelId) {
     return blockBoundaries.get(channelId) ?? [];
 }
-function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, parentChannelId) {
+function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, parentChannelId, useVerticalFormat = false) {
     // For threads: use parent's blocks + thread's tail (unless thread was reset for this bot)
     // For channels: use channel's blocks + tail
     const isThreadContext = threadId != null && parentChannelId != null;
@@ -306,7 +310,7 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
         // For threads: Get parent channel messages to build parent blocks
         for (const boundary of currentBoundaries) {
             const blockMessages = getMessagesInRange(parentMessages, boundary.firstMessageId, boundary.lastMessageId);
-            const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
+            const blockText = formatMessages(blockMessages, botUserId, botDisplayName, useVerticalFormat);
             blockData.push({ text: blockText, tokens: boundary.tokenCount });
         }
     }
@@ -314,7 +318,7 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
         // For regular channels or reset threads: Use channel's own blocks
         for (const boundary of currentBoundaries) {
             const blockMessages = getMessagesInRange(currentMessages, boundary.firstMessageId, boundary.lastMessageId);
-            const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
+            const blockText = formatMessages(blockMessages, botUserId, botDisplayName, useVerticalFormat);
             blockData.push({ text: blockText, tokens: boundary.tokenCount });
         }
     }
@@ -322,7 +326,7 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
     // Include parent's tail for threads so forked contexts don't lose recent history
     if (isThreadContext && !isResetThread && parentChannelId) {
         const parentTailMessages = getTailMessagesAfterLastBoundary(parentMessages, currentBoundaries);
-        tailData.push(...buildTailDataFromMessages(parentTailMessages, botUserId, botDisplayName));
+        tailData.push(...buildTailDataFromMessages(parentTailMessages, botUserId, botDisplayName, useVerticalFormat));
     }
     // Build tail (messages after last frozen block)
     // For threads: all thread messages (threads don't have their own blocks yet)
@@ -330,7 +334,7 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
     const tailMessages = isThreadContext
         ? currentMessages
         : getTailMessagesAfterLastBoundary(currentMessages, currentBoundaries);
-    tailData.push(...buildTailDataFromMessages(tailMessages, botUserId, botDisplayName));
+    tailData.push(...buildTailDataFromMessages(tailMessages, botUserId, botDisplayName, useVerticalFormat));
     // Calculate totals
     let totalTokens = blockData.reduce((sum, b) => sum + b.tokens, 0) +
         tailData.reduce((sum, t) => sum + t.tokens, 0);
@@ -457,15 +461,19 @@ function normalizeMessageContent(rawContent, botUserId, botDisplayName) {
         return `@${knownName ?? id}`;
     });
 }
-function formatMessage(msg, botUserId, botDisplayName) {
+function formatMessage(msg, botUserId, botDisplayName, useVerticalFormat = false) {
     const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
     const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
+    if (useVerticalFormat) {
+        // Vertical format: [Name]\nContent
+        return `[${authorName}]\n${normalizedContent}`;
+    }
     return `${authorName}: ${normalizedContent}`;
 }
-function formatMessages(messages, botUserId, botDisplayName) {
+function formatMessages(messages, botUserId, botDisplayName, useVerticalFormat = false) {
     // Filter out meta-messages (commands and system responses)
     const filtered = messages.filter((m) => !isMetaMessage(m.content));
-    return filtered.map((m) => formatMessage(m, botUserId, botDisplayName)).join('\n');
+    return filtered.map((m) => formatMessage(m, botUserId, botDisplayName, useVerticalFormat)).join('\n');
 }
 function getTailMessagesAfterLastBoundary(messages, boundaries) {
     if (boundaries.length === 0) {
@@ -478,15 +486,17 @@ function getTailMessagesAfterLastBoundary(messages, boundaries) {
     const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
     return lastBoundaryIdx !== -1 ? messages.slice(lastBoundaryIdx + 1) : messages;
 }
-function buildTailDataFromMessages(messages, botUserId, botDisplayName) {
+function buildTailDataFromMessages(messages, botUserId, botDisplayName, useVerticalFormat = false) {
     const tailData = [];
     for (const msg of messages) {
         if (isMetaMessage(msg.content))
             continue;
         const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
         const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
-        const formatted = `${authorName}: ${normalizedContent}`;
-        const tokens = estimateMessageTokens(authorName, normalizedContent);
+        const formatted = useVerticalFormat
+            ? `[${authorName}]\n${normalizedContent}`
+            : `${authorName}: ${normalizedContent}`;
+        const tokens = estimateMessageTokens(authorName, normalizedContent, useVerticalFormat);
         tailData.push({ text: formatted, tokens });
     }
     return tailData;

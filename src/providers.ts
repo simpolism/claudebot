@@ -34,6 +34,8 @@ type ProviderInitOptions = {
   geminiModel: string;
   geminiApiKey: string;
   geminiOutputMode: 'text' | 'image' | 'both';
+  botDisplayName: string;
+  useVerticalFormat: boolean;
 };
 
 type ProviderRequest = {
@@ -67,6 +69,7 @@ class AnthropicProvider implements AIProvider {
   private model: string;
   private maxContextTokens: number;
   private approxCharsPerToken: number;
+  private useVerticalFormat: boolean;
 
   constructor(options: ProviderInitOptions) {
     this.systemPrompt = options.systemPrompt;
@@ -76,6 +79,7 @@ class AnthropicProvider implements AIProvider {
     this.model = options.anthropicModel;
     this.maxContextTokens = options.maxContextTokens;
     this.approxCharsPerToken = options.approxCharsPerToken;
+    this.useVerticalFormat = options.useVerticalFormat ?? false;
     this.client = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
       defaultHeaders: {
@@ -88,6 +92,7 @@ class AnthropicProvider implements AIProvider {
     const { conversationData, botDisplayName, imageBlocks, otherSpeakers } = params;
     const { cachedBlocks, tail } = conversationData;
     const trimmedSystemPrompt = this.systemPrompt.trim();
+    const assistantName = botDisplayName || 'Assistant';
 
     const systemBlocks = trimmedSystemPrompt
       ? [
@@ -161,12 +166,17 @@ class AnthropicProvider implements AIProvider {
       });
     }
 
+    // Assistant prefill with proper format
+    const assistantPrefill = this.useVerticalFormat
+      ? `[${assistantName}]\n`
+      : `${assistantName}:`;
+
     messagesPayload.push({
       role: 'assistant',
       content: [
         {
           type: 'text',
-          text: `${botDisplayName}:`,
+          text: assistantPrefill,
         },
       ],
     });
@@ -215,6 +225,7 @@ class OpenAIProvider implements AIProvider {
   private supportsImageBlocks: boolean;
   private useUserAssistantPrefill: boolean;
   private usePromptCaching: boolean;
+  private useVerticalFormat: boolean;
 
   constructor(options: ProviderInitOptions) {
     const apiKey = options.openaiApiKey;
@@ -229,6 +240,7 @@ class OpenAIProvider implements AIProvider {
     this.supportsImageBlocks = options.supportsImageBlocks;
     this.useUserAssistantPrefill = options.useUserAssistantPrefill;
     this.usePromptCaching = options.useOpenAIEndpointOptimizations;
+    this.useVerticalFormat = options.useVerticalFormat ?? false;
     this.client = new OpenAI({
       apiKey,
       baseURL: options.openaiBaseURL,
@@ -242,6 +254,12 @@ class OpenAIProvider implements AIProvider {
     const trimmedSystemPrompt = this.systemPrompt.trim();
     const trimmedPrefillCommand = this.prefillCommand.trim();
     const usePromptCaching = this.usePromptCaching;
+    const assistantName = botDisplayName || 'Assistant';
+
+    // Assistant prefill with proper format
+    const assistantPrefill = this.useVerticalFormat
+      ? `[${assistantName}]\n`
+      : `${assistantName}:`;
 
     const messages: ChatCompletionMessageParam[] = [];
     if (trimmedSystemPrompt?.length > 0) {
@@ -298,7 +316,7 @@ class OpenAIProvider implements AIProvider {
 
       messages.push({
         role: 'assistant',
-        content: `${botDisplayName}:`,
+        content: assistantPrefill,
       });
     } else if (this.supportsImageBlocks || this.useUserAssistantPrefill) {
       const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
@@ -327,7 +345,7 @@ class OpenAIProvider implements AIProvider {
       });
       messages.push({
         role: 'assistant',
-        content: botDisplayName + ':',
+        content: assistantPrefill,
       });
     } else {
       const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
@@ -335,7 +353,7 @@ class OpenAIProvider implements AIProvider {
       // This gives the model more natural continuation behavior
       messages.push({
         role: 'assistant',
-        content: transcriptText + `\n${botDisplayName}:`,
+        content: transcriptText ? `${transcriptText}\n${assistantPrefill}` : assistantPrefill,
       });
     }
 
@@ -384,7 +402,7 @@ class OpenAIProvider implements AIProvider {
     }
 
     if (this.usePromptCaching) {
-      aggregatedText = stripAssistantPrefillPrefix(aggregatedText, botDisplayName);
+      aggregatedText = stripAssistantPrefillPrefix(aggregatedText, assistantName, this.useVerticalFormat);
     }
 
     return finalizeResponse(aggregatedText, guard);
@@ -396,6 +414,7 @@ class GeminiProvider implements AIProvider {
   private systemPrompt: string;
   private model: string;
   private outputMode: 'text' | 'image' | 'both';
+  private useVerticalFormat: boolean;
 
   constructor(options: ProviderInitOptions) {
     const apiKey = options.geminiApiKey;
@@ -405,6 +424,7 @@ class GeminiProvider implements AIProvider {
     this.systemPrompt = options.systemPrompt;
     this.model = options.geminiModel;
     this.outputMode = options.geminiOutputMode || 'both';
+    this.useVerticalFormat = options.useVerticalFormat ?? false;
     this.client = new GoogleGenAI({ apiKey });
   }
 
@@ -413,6 +433,7 @@ class GeminiProvider implements AIProvider {
     const { cachedBlocks, tail } = conversationData;
     const transcriptText = buildTranscriptFromData(cachedBlocks, tail);
     const guard = new FragmentationGuard(buildFragmentationRegex(otherSpeakers));
+    const assistantName = botDisplayName || 'Assistant';
 
     // Configure response modalities based on output mode
     const responseModalities: Array<'Text' | 'Image'> =
@@ -507,9 +528,13 @@ class GeminiProvider implements AIProvider {
     }
 
     // Build multi-turn conversation with model prefill
+    const assistantPrefill = this.useVerticalFormat
+      ? `[${assistantName}]\n`
+      : `${assistantName}:`;
+
     const contents = [
       { role: 'user' as const, parts: contentParts },
-      { role: 'model' as const, parts: [{ text: `${botDisplayName}:` }] },
+      { role: 'model' as const, parts: [{ text: assistantPrefill }] },
     ];
 
     console.log(`[GeminiProvider] Sending ${contentParts.length} content parts to model`);
@@ -648,13 +673,24 @@ function escapeRegExp(text: string): string {
 function buildFragmentationRegex(names: string[]): RegExp | null {
   if (names.length === 0) return null;
   const escapedNames = names.map(escapeRegExp).join('|');
-  return new RegExp(`(?:^|[\\r\\n])\\s*(?:<?\\s*)?(${escapedNames})\\s*>?:`, 'gi');
+  return new RegExp(
+    `(?:^|[\\r\\n])\\s*(?:<?\\s*|\\[\\s*)?(${escapedNames})\\s*(?:\\]|>|:)`,
+    'gi',
+  );
 }
 
-function stripAssistantPrefillPrefix(text: string, botName: string): string {
+function stripAssistantPrefillPrefix(
+  text: string,
+  botName: string,
+  useVerticalFormat: boolean,
+): string {
   if (!text) return text;
-  const prefixRegex = new RegExp(`^${escapeRegExp(botName)}:\\s*`, 'i');
-  return text.replace(prefixRegex, '').trimStart();
+  const flatPrefix = new RegExp(`^${escapeRegExp(botName)}:\\s*`, 'i');
+  const verticalPrefix = new RegExp(`^\\[${escapeRegExp(botName)}\\]\\s*\\n?`, 'i');
+  const cleaned = useVerticalFormat
+    ? text.replace(verticalPrefix, '')
+    : text.replace(flatPrefix, '');
+  return cleaned.trimStart();
 }
 
 function isAbortError(error: unknown): boolean {

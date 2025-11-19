@@ -205,6 +205,8 @@ function createBotInstance(botConfig: BotConfig): BotInstance {
     geminiModel: resolved.model,
     geminiApiKey: resolved.geminiApiKey || '',
     geminiOutputMode: resolved.geminiOutputMode || 'both',
+    botDisplayName: resolved.name || 'Bot',
+    useVerticalFormat: resolved.useVerticalFormat ?? false,
   });
 
   return { config: botConfig, client, aiProvider };
@@ -339,6 +341,7 @@ function setupBotEvents(instance: BotInstance): void {
           maxContextTokens: resolved.maxContextTokens,
           client,
           botDisplayName,
+          useVerticalFormat: config.useVerticalFormat ?? false,
         });
         const contextDuration = Date.now() - contextStart;
         console.log(

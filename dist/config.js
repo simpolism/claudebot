@@ -88,6 +88,7 @@ function loadBotConfigsFromJSON() {
             systemPrompt: jsonConfig.systemPrompt,
             useUserAssistantPrefill: jsonConfig.useUserAssistantPrefill,
             cliSimMode: jsonConfig.cliSimMode,
+            useVerticalFormat: jsonConfig.useVerticalFormat,
         }));
     }
     catch (err) {

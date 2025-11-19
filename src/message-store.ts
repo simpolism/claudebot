@@ -195,7 +195,11 @@ async function getTextAttachmentSections(message: Message): Promise<string[]> {
   return sections;
 }
 
-function estimateMessageTokens(authorName: string, content: string): number {
+function estimateMessageTokens(authorName: string, content: string, useVerticalFormat = false): number {
+  if (useVerticalFormat) {
+    // Vertical format: [Name]\nContent
+    return estimateTokens(`[${authorName}]\n${content}`) + 4; // +4 for message overhead
+  }
   return estimateTokens(`${authorName}: ${content}`) + 4; // +4 for message overhead
 }
 
@@ -314,6 +318,7 @@ export function getContext(
   botDisplayName: string,
   threadId?: string | null,
   parentChannelId?: string,
+  useVerticalFormat = false,
 ): ContextResult {
   // For threads: use parent's blocks + thread's tail (unless thread was reset for this bot)
   // For channels: use channel's blocks + tail
@@ -364,7 +369,7 @@ export function getContext(
         boundary.firstMessageId,
         boundary.lastMessageId,
       );
-      const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
+      const blockText = formatMessages(blockMessages, botUserId, botDisplayName, useVerticalFormat);
       blockData.push({ text: blockText, tokens: boundary.tokenCount });
     }
   } else {
@@ -375,7 +380,7 @@ export function getContext(
         boundary.firstMessageId,
         boundary.lastMessageId,
       );
-      const blockText = formatMessages(blockMessages, botUserId, botDisplayName);
+      const blockText = formatMessages(blockMessages, botUserId, botDisplayName, useVerticalFormat);
       blockData.push({ text: blockText, tokens: boundary.tokenCount });
     }
   }
@@ -389,7 +394,7 @@ export function getContext(
       currentBoundaries,
     );
     tailData.push(
-      ...buildTailDataFromMessages(parentTailMessages, botUserId, botDisplayName),
+      ...buildTailDataFromMessages(parentTailMessages, botUserId, botDisplayName, useVerticalFormat),
     );
   }
 
@@ -401,7 +406,7 @@ export function getContext(
     : getTailMessagesAfterLastBoundary(currentMessages, currentBoundaries);
 
   tailData.push(
-    ...buildTailDataFromMessages(tailMessages, botUserId, botDisplayName),
+    ...buildTailDataFromMessages(tailMessages, botUserId, botDisplayName, useVerticalFormat),
   );
 
   // Calculate totals
@@ -577,9 +582,15 @@ function formatMessage(
   msg: StoredMessage,
   botUserId: string,
   botDisplayName: string,
+  useVerticalFormat = false,
 ): string {
   const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
   const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
+
+  if (useVerticalFormat) {
+    // Vertical format: [Name]\nContent
+    return `[${authorName}]\n${normalizedContent}`;
+  }
   return `${authorName}: ${normalizedContent}`;
 }
 
@@ -587,10 +598,11 @@ function formatMessages(
   messages: StoredMessage[],
   botUserId: string,
   botDisplayName: string,
+  useVerticalFormat = false,
 ): string {
   // Filter out meta-messages (commands and system responses)
   const filtered = messages.filter((m) => !isMetaMessage(m.content));
-  return filtered.map((m) => formatMessage(m, botUserId, botDisplayName)).join('\n');
+  return filtered.map((m) => formatMessage(m, botUserId, botDisplayName, useVerticalFormat)).join('\n');
 }
 
 function getTailMessagesAfterLastBoundary(
@@ -614,14 +626,18 @@ function buildTailDataFromMessages(
   messages: StoredMessage[],
   botUserId: string,
   botDisplayName: string,
+  useVerticalFormat = false,
 ): Array<{ text: string; tokens: number }> {
   const tailData: Array<{ text: string; tokens: number }> = [];
   for (const msg of messages) {
     if (isMetaMessage(msg.content)) continue;
     const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
     const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
-    const formatted = `${authorName}: ${normalizedContent}`;
-    const tokens = estimateMessageTokens(authorName, normalizedContent);
+
+    const formatted = useVerticalFormat
+      ? `[${authorName}]\n${normalizedContent}`
+      : `${authorName}: ${normalizedContent}`;
+    const tokens = estimateMessageTokens(authorName, normalizedContent, useVerticalFormat);
     tailData.push({ text: formatted, tokens });
   }
   return tailData;

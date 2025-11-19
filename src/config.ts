@@ -30,6 +30,9 @@ export interface BotConfig {
 
   // CLI simulation mode (legacy, can be removed later)
   cliSimMode?: boolean;
+
+  // Use vertical transcript format: [Name]\nMessage instead of Name: Message
+  useVerticalFormat?: boolean;
 }
 
 // JSON file format (env var names instead of actual values)
@@ -51,6 +54,7 @@ interface BotConfigJSON {
   systemPrompt?: string;
   useUserAssistantPrefill?: boolean;
   cliSimMode?: boolean;
+  useVerticalFormat?: boolean;
 }
 
 // Global configuration shared across all bots
@@ -108,6 +112,7 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       systemPrompt: jsonConfig.systemPrompt,
       useUserAssistantPrefill: jsonConfig.useUserAssistantPrefill,
       cliSimMode: jsonConfig.cliSimMode,
+      useVerticalFormat: jsonConfig.useVerticalFormat,
     }));
   } catch (err) {
     console.error(`Failed to load bots.json:`, err);

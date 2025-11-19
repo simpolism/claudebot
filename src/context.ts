@@ -14,8 +14,9 @@ export async function buildConversationContext(params: {
   maxContextTokens: number;
   client: Client;
   botDisplayName: string;
+  useVerticalFormat?: boolean;
 }): Promise<ConversationData> {
-  const { channel, maxContextTokens, client, botDisplayName } = params;
+  const { channel, maxContextTokens, client, botDisplayName, useVerticalFormat = false } = params;
 
   if (!channel.isTextBased() || !client.user) {
     return { cachedBlocks: [], tail: [] };
@@ -40,13 +41,19 @@ export async function buildConversationContext(params: {
     botDisplayName,
     threadId,
     parentChannelId ?? undefined,
+    useVerticalFormat,
   );
 
   // Convert tail strings to SimpleMessage format
-  const tail: SimpleMessage[] = channelResult.tail.map((content) => ({
-    role: content.startsWith(`${botDisplayName}:`) ? 'assistant' : 'user',
-    content,
-  }));
+  const tail: SimpleMessage[] = channelResult.tail.map((content) => {
+    const isAssistant = useVerticalFormat
+      ? content.startsWith(`[${botDisplayName}]`)
+      : content.startsWith(`${botDisplayName}:`);
+    return {
+      role: isAssistant ? 'assistant' : 'user',
+      content,
+    };
+  });
 
   // Determine context type for logging
   let contextType = 'Channel';

@@ -8,7 +8,7 @@ Object.defineProperty(exports, "appendMessage", { enumerable: true, get: functio
 Object.defineProperty(exports, "getBlockBoundaries", { enumerable: true, get: function () { return message_store_1.getBlockBoundaries; } });
 // ---------- Context Building ----------
 async function buildConversationContext(params) {
-    const { channel, maxContextTokens, client, botDisplayName } = params;
+    const { channel, maxContextTokens, client, botDisplayName, useVerticalFormat = false } = params;
     if (!channel.isTextBased() || !client.user) {
         return { cachedBlocks: [], tail: [] };
     }
@@ -21,12 +21,17 @@ async function buildConversationContext(params) {
     if (isThread && threadId && parentChannelId) {
         await (0, message_store_1.lazyLoadThread)(threadId, parentChannelId, client, botUserId);
     }
-    const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName, threadId, parentChannelId ?? undefined);
+    const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName, threadId, parentChannelId ?? undefined, useVerticalFormat);
     // Convert tail strings to SimpleMessage format
-    const tail = channelResult.tail.map((content) => ({
-        role: content.startsWith(`${botDisplayName}:`) ? 'assistant' : 'user',
-        content,
-    }));
+    const tail = channelResult.tail.map((content) => {
+        const isAssistant = useVerticalFormat
+            ? content.startsWith(`[${botDisplayName}]`)
+            : content.startsWith(`${botDisplayName}:`);
+        return {
+            role: isAssistant ? 'assistant' : 'user',
+            content,
+        };
+    });
     // Determine context type for logging
     let contextType = 'Channel';
     if (isThread) {
