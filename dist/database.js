@@ -87,9 +87,7 @@ const path = __importStar(require("path"));
 // Database Instance
 // ============================================================================
 let db = null;
-const DB_PATH = process.env.TEST_DB_PATH
-    ? path.join(process.cwd(), process.env.TEST_DB_PATH)
-    : path.join(process.cwd(), 'claude-cache.sqlite');
+let currentDbPath = null;
 const LEGACY_CONVERSATION_CACHE_PATH = path.join(process.cwd(), 'conversation-cache.json');
 function removeLegacyConversationCache() {
     try {
@@ -106,15 +104,26 @@ function removeLegacyConversationCache() {
  * Initialize the database connection and run migrations.
  * Safe to call multiple times (idempotent).
  */
+function resolveDatabasePath() {
+    const override = process.env.TEST_DB_PATH;
+    if (override) {
+        return path.isAbsolute(override)
+            ? override
+            : path.join(process.cwd(), override);
+    }
+    return path.join(process.cwd(), 'claude-cache.sqlite');
+}
 function initializeDatabase() {
     if (db) {
         console.log('[Database] Already initialized');
         return;
     }
-    console.log(`[Database] Initializing at ${DB_PATH}`);
+    const dbPath = resolveDatabasePath();
+    currentDbPath = dbPath;
+    console.log(`[Database] Initializing at ${dbPath}`);
     removeLegacyConversationCache();
     // Create database connection
-    db = new better_sqlite3_1.default(DB_PATH);
+    db = new better_sqlite3_1.default(dbPath);
     // Enable WAL mode for better concurrency
     db.pragma('journal_mode = WAL');
     // Use NORMAL synchronous mode (faster, still safe)
@@ -133,6 +142,7 @@ function closeDatabase() {
     if (db) {
         db.close();
         db = null;
+        currentDbPath = null;
         console.log('[Database] Closed');
     }
 }
@@ -745,8 +755,9 @@ function getDatabaseStats() {
         .prepare('SELECT COUNT(DISTINCT thread_id) as count FROM messages WHERE thread_id IS NOT NULL')
         .get().count;
     let databaseSizeBytes = 0;
+    const statsPath = currentDbPath ?? resolveDatabasePath();
     try {
-        const stats = fs.statSync(DB_PATH);
+        const stats = fs.statSync(statsPath);
         databaseSizeBytes = stats.size;
     }
     catch (err) {
