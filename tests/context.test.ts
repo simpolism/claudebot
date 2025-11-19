@@ -4,7 +4,7 @@ process.env.GROQ_API_KEY ||= 'test-key';
 process.env.MAIN_CHANNEL_IDS ||= '';
 
 import { describe, expect, it, vi, afterAll, afterEach, beforeAll } from 'vitest';
-import { type Client, type Message } from 'discord.js';
+import { type Client, type Message, MessageType } from 'discord.js';
 
 type MockMessage = {
   id: string;
@@ -16,7 +16,11 @@ function createMockDiscordMessage(msg: MockMessage, channelId: string): Message 
   return {
     id: msg.id,
     content: msg.content,
-    channel: { id: channelId },
+    type: MessageType.Default,
+    channel: {
+      id: channelId,
+      isThread: () => false,
+    },
     author: {
       id: msg.authorId,
       username: msg.authorId,
@@ -41,6 +45,7 @@ function baseChannel(overrides: Partial<any> = {}) {
   return {
     id: 'channel',
     isTextBased: () => true,
+    isThread: () => false,
     ...overrides,
   } as Message['channel'];
 }

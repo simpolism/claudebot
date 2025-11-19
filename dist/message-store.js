@@ -47,6 +47,7 @@ exports.clearThread = clearThread;
 exports.clearAll = clearAll;
 exports.getStats = getStats;
 exports.getChannelSpeakers = getChannelSpeakers;
+const discord_js_1 = require("discord.js");
 const fs = __importStar(require("fs"));
 const config_1 = require("./config");
 const db = __importStar(require("./database"));
@@ -167,6 +168,10 @@ function appendStoredMessage(stored) {
     checkAndFreezeBlocks(channelId);
 }
 function appendMessage(message) {
+    // Skip thread starter messages (Discord's automatic message with thread title)
+    if (message.type === discord_js_1.MessageType.ThreadStarterMessage) {
+        return;
+    }
     appendStoredMessage(messageToStored(message));
 }
 function getChannelMessages(channelId) {
@@ -678,6 +683,10 @@ async function backfillThreadFromDiscord(threadId, client, botUserId) {
                             break;
                         const sorted = [...fetched.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1);
                         for (const msg of sorted) {
+                            // Skip thread starter messages (Discord's automatic message with thread title)
+                            if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
+                                continue;
+                            }
                             const stored = messageToStored(msg);
                             newMessages.push(stored);
                             afterCursor = msg.id;
@@ -729,6 +738,10 @@ async function backfillThreadFromDiscord(threadId, client, botUserId) {
             // Sort oldest to newest
             const sorted = [...fetched.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1);
             for (const msg of sorted) {
+                // Skip thread starter messages (Discord's automatic message with thread title)
+                if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
+                    continue;
+                }
                 const stored = messageToStored(msg);
                 newMessages.push(stored);
                 afterCursor = msg.id;
@@ -765,6 +778,10 @@ async function fetchChannelHistory(channel, maxTokens, mustIncludeMessageId) {
         const batch = [];
         let batchTokens = 0;
         for (const msg of sorted) {
+            // Skip thread starter messages (Discord's automatic message with thread title)
+            if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
+                continue;
+            }
             const stored = messageToStored(msg);
             const tokens = estimateMessageTokens(stored.authorName, stored.content);
             batch.push(stored);
