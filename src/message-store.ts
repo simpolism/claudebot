@@ -40,23 +40,22 @@ const messagesByChannel = new Map<string, StoredMessage[]>();
 const messageIdsByChannel = new Map<string, Set<string>>(); // O(1) deduplication
 const blockBoundaries = new Map<string, BlockBoundary[]>();
 const hydratedChannels = new Map<string, boolean>(); // Track lazy-loaded threads
-const resetThreads = new Map<string, Set<string>>(); // Track per-bot thread resets: threadId -> Set<botId>
+const resetThreads = new Map<string, Map<string, string>>(); // Track per-bot thread resets: threadId -> Map<botId, resetMessageId>
 
 // ---------- Helper Functions ----------
 
 /**
  * Mark a thread as reset for a specific bot (or all bots if botId is null).
  */
-function markThreadReset(threadId: string, botId: string | null): void {
-  if (botId) {
-    // Reset for specific bot
+function markThreadReset(threadId: string, botId: string | null, resetMessageId?: string): void {
+  if (botId && resetMessageId) {
+    // Reset for specific bot - store the reset message ID
     if (!resetThreads.has(threadId)) {
-      resetThreads.set(threadId, new Set());
+      resetThreads.set(threadId, new Map());
     }
-    resetThreads.get(threadId)!.add(botId);
+    resetThreads.get(threadId)!.set(botId, resetMessageId);
   } else {
-    // Reset for ALL bots - clear the set so we can distinguish "no resets" from "all reset"
-    // Actually, we can't know all bot IDs here. Better to clear and let each bot re-establish.
+    // Reset for ALL bots - clear everything
     resetThreads.delete(threadId);
   }
 }
@@ -67,6 +66,14 @@ function markThreadReset(threadId: string, botId: string | null): void {
 function isThreadResetForBot(threadId: string, botId: string): boolean {
   const botResets = resetThreads.get(threadId);
   return botResets ? botResets.has(botId) : false;
+}
+
+/**
+ * Get the reset message ID for a specific bot in a thread.
+ */
+function getThreadResetMessageId(threadId: string, botId: string): string | null {
+  const botResets = resetThreads.get(threadId);
+  return botResets?.get(botId) ?? null;
 }
 
 function ensureChannelInitialized(channelId: string): void {
@@ -205,8 +212,23 @@ export function getContext(
   checkAndEvictGlobally(boundaryChannelId, globalMaxTokens);
 
   // Re-fetch after potential eviction
-  const currentMessages = messagesByChannel.get(messageChannelId) ?? [];
+  let currentMessages = messagesByChannel.get(messageChannelId) ?? [];
   const currentBoundaries = blockBoundaries.get(boundaryChannelId) ?? [];
+
+  // Filter messages for per-bot thread resets
+  if (isThreadContext && isResetThread) {
+    const resetMessageId = getThreadResetMessageId(threadId!, botUserId);
+    if (resetMessageId) {
+      const resetIndex = currentMessages.findIndex((m) => m.id === resetMessageId);
+      if (resetIndex !== -1) {
+        // Keep only messages AFTER the reset message
+        currentMessages = currentMessages.slice(resetIndex + 1);
+        console.log(
+          `[getContext] Thread ${threadId} reset for bot ${botUserId} - filtered to ${currentMessages.length} messages after ${resetMessageId}`,
+        );
+      }
+    }
+  }
 
   // Build frozen blocks with their stored token counts
   // For threads: these are the parent's cached blocks (unless reset)
@@ -740,21 +762,16 @@ export async function lazyLoadThread(
     // Check if thread was reset for this specific bot
     const resetInfo = db.getThreadResetInfo(threadId, botUserId);
 
-    let messages: StoredMessage[] = [];
-    let boundaries: BlockBoundary[] = [];
+    // Always load ALL messages from database (shared storage across bots)
+    const messages = db.getMessages(threadId, threadId);
+    const boundaries = db.getBoundaries(threadId, threadId);
 
-    if (resetInfo) {
-      // Thread was reset for this bot - only load messages after reset boundary
+    // If this bot has a reset boundary, mark it in memory for filtering during getContext
+    if (resetInfo && resetInfo.lastResetDiscordMessageId) {
       console.log(
-        `[LazyLoad] Thread ${threadId} was reset for bot ${botUserId} at row_id ${resetInfo.lastResetRowId}`,
+        `[LazyLoad] Thread ${threadId} was reset for bot ${botUserId} at Discord msg ${resetInfo.lastResetDiscordMessageId}`,
       );
-      messages = db.getMessagesAfterRow(threadId, resetInfo.lastResetRowId, threadId);
-      boundaries = []; // No boundaries - fresh start after reset
-      markThreadReset(threadId, botUserId); // Mark as reset for this bot
-    } else {
-      // No reset for this bot - load everything from database
-      messages = db.getMessages(threadId, threadId);
-      boundaries = db.getBoundaries(threadId, threadId);
+      markThreadReset(threadId, botUserId, resetInfo.lastResetDiscordMessageId);
     }
 
     // Initialize in-memory storage
@@ -1057,7 +1074,7 @@ export function clearThread(
 ): void {
   if (botId) {
     // Per-bot reset: don't clear shared storage, just mark reset for this bot
-    markThreadReset(threadId, botId);
+    markThreadReset(threadId, botId, resetMessageId);
 
     // Record in database
     if (globalConfig.useDatabaseStorage) {
@@ -1080,7 +1097,7 @@ export function clearThread(
     messageIdsByChannel.delete(threadId);
     blockBoundaries.delete(threadId);
     hydratedChannels.delete(threadId); // Clear hydration flag
-    markThreadReset(threadId, null); // Clear all bot reset markers
+    markThreadReset(threadId, null, resetMessageId); // Clear all bot reset markers
 
     // Clear from database and record reset if enabled
     if (globalConfig.useDatabaseStorage) {
