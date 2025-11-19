@@ -13,11 +13,34 @@ type MockMessage = {
   id: string;
   content: string;
   authorId: string;
+  authorName?: string;
+  mentions?: Array<{
+    id: string;
+    username?: string;
+    globalName?: string;
+    tag?: string;
+  }>;
 };
 
 const TEST_DB_PATH = path.join(process.cwd(), process.env.TEST_DB_PATH);
 
 function createMockDiscordMessage(msg: MockMessage, channelId: string): Message {
+  const displayName = msg.authorName ?? msg.authorId;
+  const mentionEntries =
+    msg.mentions?.map((mention) => {
+      const mentionName =
+        mention.username ?? mention.globalName ?? mention.tag ?? mention.id;
+      return [
+        mention.id,
+        {
+          id: mention.id,
+          username: mention.username ?? mentionName,
+          globalName: mention.globalName ?? mentionName,
+          tag: mention.tag ?? `${mentionName}#0001`,
+        },
+      ];
+    }) ?? [];
+  const mentionUsers = new Map(mentionEntries);
   return {
     id: msg.id,
     content: msg.content,
@@ -29,13 +52,13 @@ function createMockDiscordMessage(msg: MockMessage, channelId: string): Message 
     },
     author: {
       id: msg.authorId,
-      username: msg.authorId,
-      globalName: msg.authorId,
-      tag: msg.authorId,
+      username: displayName,
+      globalName: displayName,
+      tag: `${displayName}#0001`,
     },
     createdTimestamp: parseInt(msg.id, 10) * 1000,
     attachments: new Map(),
-    mentions: { users: new Map() },
+    mentions: { users: mentionUsers },
   } as unknown as Message;
 }
 
@@ -172,6 +195,71 @@ describe('message-store', () => {
     // Bot message should use botDisplayName, not authorId
     expect(result.tail[0]).toBe('UnitTester: I am bot');
     expect(result.tail[1]).toBe('alice: I am user');
+  });
+
+  it('normalizes mention markup to usernames in context output', () => {
+    const store = getStoreModule();
+    const channelId = 'chan';
+
+    const mentionedUser = createMockDiscordMessage(
+      { id: '1', content: 'Hello there', authorId: '123', authorName: 'snav' },
+      channelId,
+    );
+    const mentioner = createMockDiscordMessage(
+      { id: '2', content: '<@123> are you around?', authorId: '456', authorName: 'caller' },
+      channelId,
+    );
+
+    store.appendMessage(mentionedUser);
+    store.appendMessage(mentioner);
+
+    const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester');
+    const lastLine = result.tail[result.tail.length - 1];
+    expect(lastLine).toBe('caller: @snav are you around?');
+  });
+
+  it('records mention metadata so unknown users still render readable tags', () => {
+    const store = getStoreModule();
+    const channelId = 'chan';
+
+    const mentioner = createMockDiscordMessage(
+      {
+        id: '1',
+        content: 'ping <@999>',
+        authorId: '456',
+        authorName: 'caller',
+        mentions: [{ id: '999', username: 'snav' }],
+      },
+      channelId,
+    );
+
+    store.appendMessage(mentioner);
+
+    const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester');
+    expect(result.tail[0]).toBe('caller: ping @snav');
+  });
+
+  it('normalizes bot self-mentions to bot display name', () => {
+    const store = getStoreModule();
+    const channelId = 'chan';
+
+    // Use numeric ID matching the realistic Discord snowflake format
+    const botId = '987654321';
+    const mentioner = createMockDiscordMessage(
+      {
+        id: '1',
+        content: '<@987654321> can you help?',
+        authorId: '456',
+        authorName: 'caller',
+        mentions: [{ id: botId, username: 'ActualBotName' }],
+      },
+      channelId,
+    );
+
+    store.appendMessage(mentioner);
+
+    const result = store.getContext(channelId, 10000, botId, 'UnitTester');
+    expect(result.tail[0]).toBe('caller: @UnitTester can you help?');
   });
 
   it('trims oldest messages when over budget', () => {

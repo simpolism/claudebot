@@ -58,6 +58,7 @@ const blockBoundaries = new Map();
 const channelThreadIds = new Map(); // Track thread_id per channel
 const hydratedChannels = new Map(); // Track lazy-loaded threads
 const resetThreads = new Map(); // Track per-bot thread resets: threadId -> Map<botId, resetMessageId>
+const userNamesById = new Map(); // Track best-known usernames for mention normalization
 // ---------- Helper Functions ----------
 /**
  * Mark a thread as reset for a specific bot (or all bots if botId is null).
@@ -103,6 +104,22 @@ function ensureChannelInitialized(channelId) {
         channelThreadIds.set(channelId, null);
     }
 }
+function rememberUserName(userId, displayName) {
+    if (!userId || !displayName)
+        return;
+    const existing = userNamesById.get(userId);
+    if (!existing || existing !== displayName) {
+        userNamesById.set(userId, displayName);
+    }
+}
+function rememberDiscordUsers(message) {
+    const authorDisplay = message.author.username ?? message.author.globalName ?? message.author.tag ?? null;
+    rememberUserName(message.author.id, authorDisplay);
+    message.mentions?.users?.forEach((user) => {
+        const mentionDisplay = user.username ?? user.globalName ?? user.tag ?? null;
+        rememberUserName(user.id, mentionDisplay);
+    });
+}
 function estimateMessageTokens(authorName, content) {
     return estimateTokens(`${authorName}: ${content}`) + 4; // +4 for message overhead
 }
@@ -144,6 +161,7 @@ function appendStoredMessage(stored) {
     const channelId = stored.channelId;
     ensureChannelInitialized(channelId);
     const messageIds = messageIdsByChannel.get(channelId);
+    rememberUserName(stored.authorId, stored.authorName);
     // O(1) deduplication
     if (messageIds.has(stored.id)) {
         return;
@@ -172,6 +190,7 @@ function appendMessage(message) {
     if (message.type === discord_js_1.MessageType.ThreadStarterMessage) {
         return;
     }
+    rememberDiscordUsers(message);
     appendStoredMessage(messageToStored(message));
 }
 function getChannelMessages(channelId) {
@@ -344,9 +363,32 @@ function isMetaMessage(content) {
         trimmed.includes('Could not determine parent channel') ||
         trimmed.includes('Failed to clear thread history'));
 }
+// Matches Discord user mention markup: <@123456> or deprecated <@!123456>
+// The !? handles the optional ! flag used in older Discord mention formats
+const USER_MENTION_REGEX = /<@!?(\d+)>/g;
+function normalizeMessageContent(rawContent, botUserId, botDisplayName) {
+    const trimmed = rawContent.trim();
+    if (!trimmed) {
+        return '(empty message)';
+    }
+    if (!trimmed.includes('<@')) {
+        return trimmed;
+    }
+    return trimmed.replace(USER_MENTION_REGEX, (_match, id) => {
+        if (!id)
+            return _match;
+        if (id === botUserId) {
+            return `@${botDisplayName}`;
+        }
+        const knownName = userNamesById.get(id);
+        // Fallback to raw user ID if username not yet seen (e.g., mentioned before they spoke)
+        return `@${knownName ?? id}`;
+    });
+}
 function formatMessage(msg, botUserId, botDisplayName) {
     const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
-    return `${authorName}: ${msg.content.trim() || '(empty message)'}`;
+    const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
+    return `${authorName}: ${normalizedContent}`;
 }
 function formatMessages(messages, botUserId, botDisplayName) {
     // Filter out meta-messages (commands and system responses)
@@ -369,9 +411,10 @@ function buildTailDataFromMessages(messages, botUserId, botDisplayName) {
     for (const msg of messages) {
         if (isMetaMessage(msg.content))
             continue;
-        const formatted = formatMessage(msg, botUserId, botDisplayName);
         const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
-        const tokens = estimateMessageTokens(authorName, msg.content);
+        const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
+        const formatted = `${authorName}: ${normalizedContent}`;
+        const tokens = estimateMessageTokens(authorName, normalizedContent);
         tailData.push({ text: formatted, tokens });
     }
     return tailData;
@@ -555,6 +598,9 @@ function hydrateChannelFromDatabase(channelId) {
     messagesByChannel.set(channelId, mergedMessages);
     messageIdsByChannel.set(channelId, new Set(mergedMessages.map((m) => m.id)));
     channelThreadIds.set(channelId, null);
+    for (const msg of mergedMessages) {
+        rememberUserName(msg.authorId, msg.authorName);
+    }
     const boundaries = db.getBoundaries(channelId, null);
     blockBoundaries.set(channelId, boundaries);
     return {
@@ -690,6 +736,7 @@ async function backfillChannelFromDiscord(channel, channelId, afterDiscordMessag
                 if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
                     continue;
                 }
+                rememberDiscordUsers(msg);
                 const stored = messageToStored(msg);
                 newMessages.push(stored);
                 afterCursor = msg.id;
@@ -743,6 +790,7 @@ async function backfillThreadFromDiscord(threadId, client, botUserId) {
                         if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
                             continue;
                         }
+                        rememberDiscordUsers(msg);
                         const stored = messageToStored(msg);
                         newMessages.push(stored);
                         afterCursor = msg.id;
@@ -796,6 +844,7 @@ async function backfillThreadFromDiscord(threadId, client, botUserId) {
                 if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
                     continue;
                 }
+                rememberDiscordUsers(msg);
                 const stored = messageToStored(msg);
                 newMessages.push(stored);
                 afterCursor = msg.id;
@@ -835,6 +884,7 @@ async function fetchChannelHistory(channel, maxTokens, mustIncludeMessageId) {
             if (msg.type === discord_js_1.MessageType.ThreadStarterMessage) {
                 continue;
             }
+            rememberDiscordUsers(msg);
             const stored = messageToStored(msg);
             const tokens = estimateMessageTokens(stored.authorName, stored.content);
             batch.push(stored);

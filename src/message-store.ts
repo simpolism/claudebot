@@ -38,6 +38,7 @@ const blockBoundaries = new Map<string, BlockBoundary[]>();
 const channelThreadIds = new Map<string, string | null>(); // Track thread_id per channel
 const hydratedChannels = new Map<string, boolean>(); // Track lazy-loaded threads
 const resetThreads = new Map<string, Map<string, string>>(); // Track per-bot thread resets: threadId -> Map<botId, resetMessageId>
+const userNamesById = new Map<string, string>(); // Track best-known usernames for mention normalization
 
 // ---------- Helper Functions ----------
 
@@ -86,6 +87,25 @@ function ensureChannelInitialized(channelId: string): void {
   if (!channelThreadIds.has(channelId)) {
     channelThreadIds.set(channelId, null);
   }
+}
+
+function rememberUserName(userId: string | null | undefined, displayName?: string | null): void {
+  if (!userId || !displayName) return;
+  const existing = userNamesById.get(userId);
+  if (!existing || existing !== displayName) {
+    userNamesById.set(userId, displayName);
+  }
+}
+
+function rememberDiscordUsers(message: Message): void {
+  const authorDisplay =
+    message.author.username ?? message.author.globalName ?? message.author.tag ?? null;
+  rememberUserName(message.author.id, authorDisplay);
+
+  message.mentions?.users?.forEach((user) => {
+    const mentionDisplay = user.username ?? user.globalName ?? user.tag ?? null;
+    rememberUserName(user.id, mentionDisplay);
+  });
 }
 
 function estimateMessageTokens(authorName: string, content: string): number {
@@ -138,6 +158,7 @@ export function appendStoredMessage(stored: StoredMessage): void {
   ensureChannelInitialized(channelId);
 
   const messageIds = messageIdsByChannel.get(channelId)!;
+  rememberUserName(stored.authorId, stored.authorName);
 
   // O(1) deduplication
   if (messageIds.has(stored.id)) {
@@ -172,6 +193,7 @@ export function appendMessage(message: Message): void {
   if (message.type === MessageType.ThreadStarterMessage) {
     return;
   }
+  rememberDiscordUsers(message);
   appendStoredMessage(messageToStored(message));
 }
 
@@ -428,13 +450,43 @@ function isMetaMessage(content: string): boolean {
   );
 }
 
+// Matches Discord user mention markup: <@123456> or deprecated <@!123456>
+// The !? handles the optional ! flag used in older Discord mention formats
+const USER_MENTION_REGEX = /<@!?(\d+)>/g;
+
+function normalizeMessageContent(
+  rawContent: string,
+  botUserId: string,
+  botDisplayName: string,
+): string {
+  const trimmed = rawContent.trim();
+  if (!trimmed) {
+    return '(empty message)';
+  }
+
+  if (!trimmed.includes('<@')) {
+    return trimmed;
+  }
+
+  return trimmed.replace(USER_MENTION_REGEX, (_match, id: string) => {
+    if (!id) return _match;
+    if (id === botUserId) {
+      return `@${botDisplayName}`;
+    }
+    const knownName = userNamesById.get(id);
+    // Fallback to raw user ID if username not yet seen (e.g., mentioned before they spoke)
+    return `@${knownName ?? id}`;
+  });
+}
+
 function formatMessage(
   msg: StoredMessage,
   botUserId: string,
   botDisplayName: string,
 ): string {
   const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
-  return `${authorName}: ${msg.content.trim() || '(empty message)'}`;
+  const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
+  return `${authorName}: ${normalizedContent}`;
 }
 
 function formatMessages(
@@ -472,9 +524,10 @@ function buildTailDataFromMessages(
   const tailData: Array<{ text: string; tokens: number }> = [];
   for (const msg of messages) {
     if (isMetaMessage(msg.content)) continue;
-    const formatted = formatMessage(msg, botUserId, botDisplayName);
     const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
-    const tokens = estimateMessageTokens(authorName, msg.content);
+    const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
+    const formatted = `${authorName}: ${normalizedContent}`;
+    const tokens = estimateMessageTokens(authorName, normalizedContent);
     tailData.push({ text: formatted, tokens });
   }
   return tailData;
@@ -716,6 +769,9 @@ function hydrateChannelFromDatabase(channelId: string): {
   messagesByChannel.set(channelId, mergedMessages);
   messageIdsByChannel.set(channelId, new Set(mergedMessages.map((m) => m.id)));
   channelThreadIds.set(channelId, null);
+  for (const msg of mergedMessages) {
+    rememberUserName(msg.authorId, msg.authorName);
+  }
 
   const boundaries = db.getBoundaries(channelId, null);
   blockBoundaries.set(channelId, boundaries);
@@ -907,6 +963,7 @@ async function backfillChannelFromDiscord(
         if (msg.type === MessageType.ThreadStarterMessage) {
           continue;
         }
+        rememberDiscordUsers(msg);
         const stored = messageToStored(msg);
         newMessages.push(stored);
         afterCursor = msg.id;
@@ -975,13 +1032,14 @@ async function backfillThreadFromDiscord(
           );
 
           for (const msg of sorted) {
-            if (msg.type === MessageType.ThreadStarterMessage) {
-              continue;
-            }
-            const stored = messageToStored(msg);
-            newMessages.push(stored);
-            afterCursor = msg.id;
+          if (msg.type === MessageType.ThreadStarterMessage) {
+            continue;
           }
+          rememberDiscordUsers(msg);
+          const stored = messageToStored(msg);
+          newMessages.push(stored);
+          afterCursor = msg.id;
+        }
 
           if (fetched.size < 100) break;
         }
@@ -1050,6 +1108,7 @@ async function backfillThreadFromDiscord(
         if (msg.type === MessageType.ThreadStarterMessage) {
           continue;
         }
+        rememberDiscordUsers(msg);
         const stored = messageToStored(msg);
         newMessages.push(stored);
         afterCursor = msg.id;
@@ -1101,6 +1160,7 @@ async function fetchChannelHistory(
       if (msg.type === MessageType.ThreadStarterMessage) {
         continue;
       }
+      rememberDiscordUsers(msg);
       const stored = messageToStored(msg);
       const tokens = estimateMessageTokens(stored.authorName, stored.content);
       batch.push(stored);
