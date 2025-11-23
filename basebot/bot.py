@@ -26,6 +26,9 @@ MAX_HISTORY_MESSAGES = int(os.getenv('MAX_HISTORY_MESSAGES', '100'))
 MAX_COMPLETION_TOKENS = int(os.getenv('MAX_COMPLETION_TOKENS', '100'))
 DEVICE_MODE = os.getenv('DEVICE', 'auto').lower()
 
+# GPT-2 XL has a 1024 token context window
+GPT2_CONTEXT_WINDOW = 1024
+
 # Validate required config
 if not DISCORD_TOKEN:
     raise ValueError("DISCORD_TOKEN environment variable is required")
@@ -46,8 +49,8 @@ tokenizer = None
 device = None
 
 
-def load_gpt2_model():
-    """Load GPT-2 XL model and tokenizer"""
+def _load_gpt2_model_sync():
+    """Load GPT-2 XL model and tokenizer (synchronous, runs in thread)"""
     global model, tokenizer, device
 
     print("Loading GPT-2 XL model...")
@@ -74,8 +77,14 @@ def load_gpt2_model():
     print(f"GPT-2 XL loaded successfully on device: {device}")
 
 
-def generate_completion(prompt: str, max_tokens: int = 100) -> str:
-    """Generate text completion using GPT-2 XL"""
+async def load_gpt2_model():
+    """Load GPT-2 XL model and tokenizer (async wrapper)"""
+    # Run in thread pool to avoid blocking event loop
+    await asyncio.to_thread(_load_gpt2_model_sync)
+
+
+def _generate_completion_sync(prompt: str, max_tokens: int = 100) -> str:
+    """Generate text completion using GPT-2 XL (synchronous, runs in thread)"""
     if model is None or tokenizer is None:
         return "(Model not loaded)"
 
@@ -105,6 +114,12 @@ def generate_completion(prompt: str, max_tokens: int = 100) -> str:
     except Exception as e:
         print(f"Error generating completion: {e}")
         return f"(Error: {str(e)})"
+
+
+async def generate_completion(prompt: str, max_tokens: int = 100) -> str:
+    """Generate text completion using GPT-2 XL (async wrapper)"""
+    # Run in thread pool to avoid blocking event loop
+    return await asyncio.to_thread(_generate_completion_sync, prompt, max_tokens)
 
 
 async def fetch_history(channel, max_messages: int) -> List[Message]:
@@ -143,6 +158,110 @@ def format_transcript(messages: List[Message]) -> str:
     return "\n".join(lines) + "\n" if lines else ""
 
 
+def format_message(msg: Message) -> str:
+    """Format a single message with display name"""
+    return f"{msg.author.display_name}: {msg.content}"
+
+
+def build_prompt_with_budget(messages: List[Message], prefix: str) -> str:
+    """
+    Build prompt from messages respecting GPT-2's token budget.
+    Uses accumulative approach: adds messages from newest to oldest until budget is reached.
+
+    Args:
+        messages: List of Discord messages (oldest to newest)
+        prefix: Text to append after history
+
+    Returns:
+        Formatted prompt that fits within token budget
+    """
+    if tokenizer is None:
+        # Fallback if tokenizer not loaded
+        return prefix
+
+    # Calculate available budget for context (reserve space for completion)
+    budget = GPT2_CONTEXT_WINDOW - MAX_COMPLETION_TOKENS
+
+    # Tokenize prefix first
+    prefix_text = prefix if prefix else ""
+    prefix_tokens = tokenizer.encode(prefix_text)
+
+    if len(prefix_tokens) >= budget:
+        # Prefix alone exceeds budget, truncate it
+        print(f"WARNING: Prefix ({len(prefix_tokens)} tokens) exceeds budget, truncating")
+        prefix_tokens = prefix_tokens[:budget]
+        return tokenizer.decode(prefix_tokens, skip_special_tokens=True)
+
+    # Remaining budget for history
+    remaining_budget = budget - len(prefix_tokens)
+
+    # Accumulate message tokens from newest to oldest
+    history_lines = []
+    total_history_tokens = 0
+
+    for msg in reversed(messages):
+        # Skip empty messages
+        if not msg.content.strip():
+            continue
+
+        msg_line = format_message(msg)
+        msg_tokens = tokenizer.encode(msg_line + "\n")
+        msg_token_count = len(msg_tokens)
+
+        # Check if adding this message would exceed budget
+        if total_history_tokens + msg_token_count > remaining_budget:
+            break
+
+        # Prepend to history (maintains chronological order)
+        history_lines.insert(0, msg_line)
+        total_history_tokens += msg_token_count
+
+    # Build final prompt
+    history_text = "\n".join(history_lines)
+    if history_text:
+        history_text += "\n"
+
+    final_prompt = history_text + prefix_text
+
+    # Log token usage
+    final_tokens = len(tokenizer.encode(final_prompt))
+    print(f"[Token budget] Using {final_tokens}/{budget} context tokens " +
+          f"({len(history_lines)} messages + prefix)")
+
+    return final_prompt
+
+
+def truncate_prompt_to_budget(prompt: str) -> str:
+    """
+    Truncate a prompt to fit within GPT-2's token budget.
+    Used for direct completion mode.
+
+    Args:
+        prompt: Raw text prompt
+
+    Returns:
+        Truncated prompt that fits within token budget
+    """
+    if tokenizer is None:
+        # Fallback if tokenizer not loaded
+        return prompt
+
+    # Calculate available budget for context (reserve space for completion)
+    budget = GPT2_CONTEXT_WINDOW - MAX_COMPLETION_TOKENS
+
+    # Tokenize prompt
+    input_tokens = tokenizer.encode(prompt)
+
+    if len(input_tokens) <= budget:
+        # Prompt fits within budget
+        return prompt
+
+    # Truncate from the beginning (keep most recent context)
+    print(f"WARNING: Prompt ({len(input_tokens)} tokens) exceeds budget, truncating to {budget} tokens")
+    truncated_tokens = input_tokens[-budget:]
+    return tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+
+
 async def process_message(message: Message):
     """Process a single message with GPT-2 completion"""
     try:
@@ -156,32 +275,30 @@ async def process_message(message: Message):
 
         # Determine mode and generate completion
         if content.startswith('.continue'):
-            # Mode B: Transcript continuation
+            # Mode B: Transcript continuation with token budgeting
             prefix = content[len('.continue'):].strip()
 
             async with message.channel.typing():
                 # Fetch channel history
                 history = await fetch_history(message.channel, MAX_HISTORY_MESSAGES)
 
-                # Format as transcript
-                transcript = format_transcript(history)
-
-                # Build prompt: transcript + prefix
-                prompt = transcript + prefix
+                # Build prompt with accumulative token budgeting
+                prompt = build_prompt_with_budget(history, prefix)
 
                 print(f"[Transcript mode] Prompt length: {len(prompt)} chars, prefix: '{prefix[:50]}...'")
 
-                # Generate completion
-                completion = generate_completion(prompt, max_tokens=MAX_COMPLETION_TOKENS)
+                # Generate completion (async, runs in thread pool)
+                completion = await generate_completion(prompt, max_tokens=MAX_COMPLETION_TOKENS)
         else:
-            # Mode A: Direct completion
+            # Mode A: Direct completion with token check
             async with message.channel.typing():
-                prompt = content
+                # Truncate prompt if it exceeds token budget
+                prompt = truncate_prompt_to_budget(content)
 
                 print(f"[Direct mode] Prompt: '{prompt[:100]}...'")
 
-                # Generate completion
-                completion = generate_completion(prompt, max_tokens=MAX_COMPLETION_TOKENS)
+                # Generate completion (async, runs in thread pool)
+                completion = await generate_completion(prompt, max_tokens=MAX_COMPLETION_TOKENS)
 
         # Send reply
         await message.reply(completion)
@@ -202,8 +319,8 @@ async def on_ready():
     print(f'Logged in as {client.user.name} (ID: {client.user.id})')
     print(f'Bot is ready and listening in all channels where mentioned')
 
-    # Load GPT-2 model
-    load_gpt2_model()
+    # Load GPT-2 model (async, runs in thread pool to avoid blocking event loop)
+    await load_gpt2_model()
 
 
 @client.event
