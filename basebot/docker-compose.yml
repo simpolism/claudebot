@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # CPU-only version (default)
+  gpt2bot-cpu:
+    build: .
+    image: gpt2bot:latest
+    container_name: gpt2bot-cpu
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DEVICE=cpu
+    volumes:
+      # Mount .env file for configuration
+      - ./.env:/app/.env:ro
+      # Optional: Mount volume for HuggingFace cache to avoid re-downloading model
+      - huggingface-cache:/root/.cache/huggingface
+    profiles:
+      - cpu
+
+  # GPU version (requires NVIDIA Docker runtime)
+  gpt2bot-gpu:
+    build: .
+    image: gpt2bot:latest
+    container_name: gpt2bot-gpu
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DEVICE=cuda
+    volumes:
+      - ./.env:/app/.env:ro
+      - huggingface-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - gpu
+
+volumes:
+  huggingface-cache:
+    driver: local

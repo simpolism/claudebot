@@ -13,12 +13,89 @@ A simple Discord bot that uses GPT-2 XL for text completion. Supports both direc
 
 ## Installation
 
-### Prerequisites
+Choose between native Python installation or Docker.
 
+### Option 1: Docker (Recommended)
+
+**Prerequisites:**
+- Docker
+- Docker Compose (optional, for easier management)
+- NVIDIA Docker runtime (for GPU support)
+
+**Setup:**
+
+1. Clone or navigate to this directory:
+   ```bash
+   cd basebot/
+   ```
+
+2. Create a `.env` file from the example:
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Edit `.env` and add your Discord bot token:
+   ```env
+   DISCORD_TOKEN=your_discord_bot_token_here
+   ```
+
+4. Run with Docker Compose:
+
+   **CPU mode:**
+   ```bash
+   docker compose --profile cpu up -d
+   ```
+
+   **GPU mode (requires NVIDIA Docker runtime):**
+   ```bash
+   docker compose --profile gpu up -d
+   ```
+
+**Alternatively, use raw Docker commands:**
+
+Build the image:
+```bash
+docker build -t gpt2bot .
+```
+
+Run CPU version:
+```bash
+docker run -d --name gpt2bot \
+  --env-file .env \
+  -e DEVICE=cpu \
+  gpt2bot
+```
+
+Run GPU version:
+```bash
+docker run -d --name gpt2bot \
+  --env-file .env \
+  -e DEVICE=cuda \
+  --gpus all \
+  gpt2bot
+```
+
+**View logs:**
+```bash
+docker logs -f gpt2bot
+# or with compose:
+docker compose logs -f
+```
+
+**Stop the bot:**
+```bash
+docker stop gpt2bot
+# or with compose:
+docker compose --profile cpu down
+```
+
+### Option 2: Native Python
+
+**Prerequisites:**
 - Python 3.8 or higher
 - pip
 
-### Setup
+**Setup:**
 
 1. Clone or navigate to this directory:
    ```bash
@@ -55,6 +132,10 @@ Edit `.env` to configure the bot:
 
 ### Running the Bot
 
+**With Docker:**
+See Installation section above. The bot runs automatically when the container starts.
+
+**With Python:**
 ```bash
 python bot.py
 ```
@@ -63,6 +144,8 @@ The bot will:
 1. Load the GPT-2 XL model (this takes a moment on first run)
 2. Connect to Discord
 3. Listen for mentions in any channel
+
+**Note:** On first run, the bot will download the GPT-2 XL model (~6GB). With Docker, this is cached in a volume and won't be re-downloaded on restarts.
 
 ### Interacting with the Bot
 
@@ -137,9 +220,20 @@ The bot processes one message per channel at a time. If multiple users tag the b
 
 ### Model Download Fails
 
-If the model download fails or times out, try:
+**Native Python:**
 ```bash
 python -c "from transformers import GPT2LMHeadModel, GPT2Tokenizer; GPT2Tokenizer.from_pretrained('gpt2-xl'); GPT2LMHeadModel.from_pretrained('gpt2-xl')"
+```
+
+**Docker:**
+Check logs for download progress:
+```bash
+docker logs -f gpt2bot
+```
+
+The model cache is persisted in a Docker volume. If download fails, you can restart:
+```bash
+docker compose restart
 ```
 
 ### CUDA Out of Memory
@@ -149,12 +243,44 @@ If you get CUDA OOM errors, set `DEVICE=cpu` in `.env`:
 DEVICE=cpu
 ```
 
+Then restart the container:
+```bash
+docker compose --profile cpu up -d
+```
+
 ### Bot Not Responding
 
 Check that:
 1. Bot has proper Discord permissions (Read Messages, Send Messages, Read Message History)
 2. Message Content intent is enabled in Discord Developer Portal
 3. Bot is mentioned correctly (not just replied to)
+
+**Docker-specific checks:**
+```bash
+# Check if container is running
+docker ps | grep gpt2bot
+
+# View logs
+docker logs gpt2bot
+
+# Check environment variables
+docker exec gpt2bot env | grep DISCORD
+```
+
+### Docker GPU Not Working
+
+Ensure NVIDIA Docker runtime is installed:
+```bash
+# Test GPU access
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+```
+
+If this fails, install nvidia-docker2:
+```bash
+# Ubuntu/Debian
+sudo apt-get install -y nvidia-docker2
+sudo systemctl restart docker
+```
 
 ## Comparison with Main Bot
 
