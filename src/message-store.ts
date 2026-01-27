@@ -28,7 +28,15 @@ export interface BlockBoundary {
 
 // ---------- Constants ----------
 
-const DEFAULT_TOKENS_PER_BLOCK = 30000;
+const MIN_TOKENS_PER_BLOCK = 1000;
+const MAX_TOKENS_PER_BLOCK = 30000;
+const DEFAULT_TOKENS_PER_BLOCK = Math.max(
+  MIN_TOKENS_PER_BLOCK,
+  Math.min(
+    MAX_TOKENS_PER_BLOCK,
+    Math.floor((getMaxBotContextTokens() - 10000) / 3),
+  ),
+);
 
 // ---------- In-Memory Storage ----------
 

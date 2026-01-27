@@ -50,7 +50,9 @@ const discord_js_1 = require("discord.js");
 const config_1 = require("./config");
 const db = __importStar(require("./database"));
 // ---------- Constants ----------
-const DEFAULT_TOKENS_PER_BLOCK = 30000;
+const MIN_TOKENS_PER_BLOCK = 1000;
+const MAX_TOKENS_PER_BLOCK = 30000;
+const DEFAULT_TOKENS_PER_BLOCK = Math.max(MIN_TOKENS_PER_BLOCK, Math.min(MAX_TOKENS_PER_BLOCK, Math.floor(((0, config_1.getMaxBotContextTokens)() - 10000) / 3)));
 // ---------- In-Memory Storage ----------
 const messagesByChannel = new Map();
 const messageIdsByChannel = new Map(); // O(1) deduplication
