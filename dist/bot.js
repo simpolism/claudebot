@@ -65,6 +65,11 @@ function shouldRespond(message, client) {
         console.log(`[${client.user.username}] Skipping response in ${channelId} - bot exchange limit reached (${currentCount}/${MAX_CONSECUTIVE_BOT_EXCHANGES})`);
         return false;
     }
+    if (message.author.bot) {
+        const nextCount = currentCount + 1;
+        consecutiveBotMessages.set(channelId, nextCount);
+        console.log(`[${client.user.username}] Reserved bot-to-bot exchange: ${nextCount}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`);
+    }
     return true;
 }
 function getBotCanonicalName(client) {
@@ -245,6 +250,7 @@ function setupBotEvents(instance) {
         // Process this message and any queued messages
         const processMessage = async (msg) => {
             let stopTyping = null;
+            let sentReply = false;
             const receiveTime = Date.now();
             const botDisplayName = getBotCanonicalName(client);
             console.log(`[${config.name}] Processing mention ${msg.id} in ${channelId} at ${new Date(receiveTime).toISOString()}`);
@@ -300,11 +306,13 @@ function setupBotEvents(instance) {
                             files: imageAttachment ? [imageAttachment] : undefined,
                         });
                         sentMessages.push(firstSent);
+                        sentReply = true;
                     }
                     else {
                         // Multiple chunks - image goes on last chunk
                         const firstSent = await msg.reply(firstChunk);
                         sentMessages.push(firstSent);
+                        sentReply = true;
                         for (let i = 0; i < restChunks.length; i++) {
                             const chunk = restChunks[i];
                             const isLastChunk = i === restChunks.length - 1;
@@ -313,10 +321,12 @@ function setupBotEvents(instance) {
                             if (hasSend(msg.channel)) {
                                 const sent = await msg.channel.send({ content: chunk, files });
                                 sentMessages.push(sent);
+                                sentReply = true;
                             }
                             else {
                                 const sent = await msg.reply({ content: chunk, files });
                                 sentMessages.push(sent);
+                                sentReply = true;
                             }
                         }
                     }
@@ -328,6 +338,7 @@ function setupBotEvents(instance) {
                         files: [imageAttachment],
                     });
                     sentMessages.push(firstSent);
+                    sentReply = true;
                 }
                 // Append bot's own replies to the message store
                 for (const sentMsg of sentMessages) {
@@ -366,16 +377,16 @@ function setupBotEvents(instance) {
                     };
                     (0, message_store_1.appendStoredMessage)(stored);
                 }
-                // Track bot-to-bot exchange: increment counter if we responded to another bot
-                if (msg.author.bot) {
-                    const current = consecutiveBotMessages.get(channelId) || 0;
-                    consecutiveBotMessages.set(channelId, current + 1);
-                    console.log(`[${config.name}] Bot-to-bot exchange count: ${current + 1}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`);
-                }
                 const totalDuration = Date.now() - receiveTime;
                 console.log(`[${config.name}] Replied in channel ${channelId} to ${msg.author.tag} (${normalizedReplyText.length} chars, ${replyChunks.length} chunk${replyChunks.length === 1 ? '' : 's'}) in ${totalDuration}ms`);
             }
             catch (err) {
+                if (msg.author.bot && !sentReply) {
+                    const current = consecutiveBotMessages.get(channelId) || 0;
+                    const nextCount = Math.max(0, current - 1);
+                    consecutiveBotMessages.set(channelId, nextCount);
+                    console.log(`[${config.name}] Rolled back bot-to-bot exchange reservation: ${current}/${MAX_CONSECUTIVE_BOT_EXCHANGES} -> ${nextCount}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`);
+                }
                 console.error(`[${config.name}] Error handling message ${msg.id}:`, err);
                 try {
                     await msg.react('⚠️');

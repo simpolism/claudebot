@@ -101,6 +101,14 @@ function shouldRespond(message: Message, client: Client): boolean {
     return false;
   }
 
+  if (message.author.bot) {
+    const nextCount = currentCount + 1;
+    consecutiveBotMessages.set(channelId, nextCount);
+    console.log(
+      `[${client.user.username}] Reserved bot-to-bot exchange: ${nextCount}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`,
+    );
+  }
+
   return true;
 }
 
@@ -327,6 +335,7 @@ function setupBotEvents(instance: BotInstance): void {
     // Process this message and any queued messages
     const processMessage = async (msg: Message) => {
       let stopTyping: (() => void) | null = null;
+      let sentReply = false;
       const receiveTime = Date.now();
       const botDisplayName = getBotCanonicalName(client);
 
@@ -401,10 +410,12 @@ function setupBotEvents(instance: BotInstance): void {
               files: imageAttachment ? [imageAttachment] : undefined,
             });
             sentMessages.push(firstSent);
+            sentReply = true;
           } else {
             // Multiple chunks - image goes on last chunk
             const firstSent = await msg.reply(firstChunk);
             sentMessages.push(firstSent);
+            sentReply = true;
 
             for (let i = 0; i < restChunks.length; i++) {
               const chunk = restChunks[i];
@@ -416,9 +427,11 @@ function setupBotEvents(instance: BotInstance): void {
               if (hasSend(msg.channel)) {
                 const sent = await msg.channel.send({ content: chunk, files });
                 sentMessages.push(sent);
+                sentReply = true;
               } else {
                 const sent = await msg.reply({ content: chunk, files });
                 sentMessages.push(sent);
+                sentReply = true;
               }
             }
           }
@@ -429,6 +442,7 @@ function setupBotEvents(instance: BotInstance): void {
             files: [imageAttachment],
           });
           sentMessages.push(firstSent);
+          sentReply = true;
         }
 
         // Append bot's own replies to the message store
@@ -473,15 +487,6 @@ function setupBotEvents(instance: BotInstance): void {
           appendStoredMessage(stored);
         }
 
-        // Track bot-to-bot exchange: increment counter if we responded to another bot
-        if (msg.author.bot) {
-          const current = consecutiveBotMessages.get(channelId) || 0;
-          consecutiveBotMessages.set(channelId, current + 1);
-          console.log(
-            `[${config.name}] Bot-to-bot exchange count: ${current + 1}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`,
-          );
-        }
-
         const totalDuration = Date.now() - receiveTime;
         console.log(
           `[${config.name}] Replied in channel ${channelId} to ${msg.author.tag} (${normalizedReplyText.length} chars, ${replyChunks.length} chunk${
@@ -489,6 +494,14 @@ function setupBotEvents(instance: BotInstance): void {
           }) in ${totalDuration}ms`,
         );
       } catch (err) {
+        if (msg.author.bot && !sentReply) {
+          const current = consecutiveBotMessages.get(channelId) || 0;
+          const nextCount = Math.max(0, current - 1);
+          consecutiveBotMessages.set(channelId, nextCount);
+          console.log(
+            `[${config.name}] Rolled back bot-to-bot exchange reservation: ${current}/${MAX_CONSECUTIVE_BOT_EXCHANGES} -> ${nextCount}/${MAX_CONSECUTIVE_BOT_EXCHANGES}`,
+          );
+        }
         console.error(`[${config.name}] Error handling message ${msg.id}:`, err);
         try {
           await msg.react('⚠️');
