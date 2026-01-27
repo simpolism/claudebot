@@ -14,7 +14,7 @@ const database_1 = require("./database");
 exports.botInstances = [];
 // ---------- Bot-to-Bot Exchange Tracking ----------
 const consecutiveBotMessages = new Map();
-const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
+const MAX_CONSECUTIVE_BOT_EXCHANGES = 1;
 // ---------- Channel Processing Locks ----------
 const processingChannels = new Set();
 // Queue for pending messages when channel is busy

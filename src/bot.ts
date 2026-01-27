@@ -38,7 +38,7 @@ export const botInstances: BotInstance[] = [];
 
 // ---------- Bot-to-Bot Exchange Tracking ----------
 const consecutiveBotMessages = new Map<string, number>();
-const MAX_CONSECUTIVE_BOT_EXCHANGES = 3;
+const MAX_CONSECUTIVE_BOT_EXCHANGES = 1;
 
 // ---------- Channel Processing Locks ----------
 const processingChannels = new Set<string>();
