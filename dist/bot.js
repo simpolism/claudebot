@@ -475,11 +475,34 @@ async function main() {
         process.exit(1);
     }
     // Load history for configured channels (after login so we have access)
+    // Try each bot until one has access to each channel
     if (config_1.globalConfig.mainChannelIds.length > 0 && instances.length > 0) {
-        const firstInstance = instances[0];
-        if (firstInstance) {
-            console.log('Loading channel history...');
-            await (0, message_store_1.loadHistoryFromDiscord)(config_1.globalConfig.mainChannelIds, firstInstance.client, config_1.globalConfig.maxContextTokens);
+        console.log('Loading channel history...');
+        const clients = instances.map((i) => i.client);
+        for (const channelId of config_1.globalConfig.mainChannelIds) {
+            let loaded = false;
+            for (const client of clients) {
+                try {
+                    await (0, message_store_1.loadHistoryFromDiscord)([channelId], client, config_1.globalConfig.maxContextTokens);
+                    loaded = true;
+                    break; // Success - move to next channel
+                }
+                catch (err) {
+                    const isAccessError = err instanceof Error &&
+                        'code' in err &&
+                        err.code === 50001;
+                    if (isAccessError) {
+                        // This bot doesn't have access, try the next one
+                        console.log(`[History] Bot ${client.user?.username ?? 'unknown'} lacks access to ${channelId}, trying next...`);
+                        continue;
+                    }
+                    // Different error - log and continue to next bot
+                    console.error(`[History] Error loading ${channelId} with ${client.user?.username ?? 'unknown'}:`, err);
+                }
+            }
+            if (!loaded) {
+                console.warn(`[History] No bot has access to channel ${channelId}`);
+            }
         }
     }
 }

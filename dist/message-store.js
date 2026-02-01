@@ -831,6 +831,13 @@ async function loadHistoryFromDiscord(channelIds, client, maxTokensPerChannel) {
                 `in ${duration}ms with ${boundaries.length} frozen blocks`);
         }
         catch (err) {
+            // Rethrow access errors so caller can try a different bot
+            const isAccessError = err instanceof Error &&
+                'code' in err &&
+                err.code === 50001;
+            if (isAccessError) {
+                throw err;
+            }
             console.error(`Failed to load history for ${channelId}:`, err);
         }
     }
