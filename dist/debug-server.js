@@ -129,10 +129,15 @@ function buildPayloadPreview(channelId, botName) {
     const resolved = (0, config_1.resolveConfig)(instance.config);
     // Note: Debug server shows channel context, not thread context
     // To support threads, would need to detect thread and pass threadId/parentChannelId
-    const contextResult = (0, message_store_1.getContext)(channelId, resolved.maxContextTokens, botUserId, botDisplayName, null, undefined);
+    const useVerticalFormat = instance.config.useVerticalFormat ?? false;
+    const enableTimestamps = instance.config.enableTimestamps ?? false;
+    const contextResult = (0, message_store_1.getContext)(channelId, resolved.maxContextTokens, botUserId, botDisplayName, null, undefined, useVerticalFormat, enableTimestamps);
     // Convert to SimpleMessage format (as done in context.ts)
+    const isAssistantMessage = (content) => useVerticalFormat
+        ? content.startsWith(`[${botDisplayName}]`)
+        : content.startsWith(`${botDisplayName}:`);
     const tail = contextResult.tail.map((content) => ({
-        role: content.startsWith(`${botDisplayName}:`) ? 'assistant' : 'user',
+        role: isAssistantMessage(content) ? 'assistant' : 'user',
         content,
     }));
     const transcript = {
