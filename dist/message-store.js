@@ -277,7 +277,7 @@ function getChannelMessages(channelId) {
 function getBlockBoundaries(channelId) {
     return blockBoundaries.get(channelId) ?? [];
 }
-function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, parentChannelId, useVerticalFormat = false) {
+function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, parentChannelId, useVerticalFormat = false, enableTimestamps = false) {
     // For threads: use parent's blocks + thread's tail (unless thread was reset for this bot)
     // For channels: use channel's blocks + tail
     const isThreadContext = threadId != null && parentChannelId != null;
@@ -308,11 +308,17 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
     // Build frozen blocks with their stored token counts
     // For threads: these are the parent's cached blocks (unless reset)
     const blockData = [];
+    // Track first timestamp state across blocks and tail
+    // Timestamps are deterministic (based on stored message timestamps + config),
+    // so blocks remain cache-stable as long as config doesn't change.
+    let isFirstTimestamp = true;
     if (isThreadContext && !isResetThread) {
         // For threads: Get parent channel messages to build parent blocks
         for (const boundary of currentBoundaries) {
             const blockMessages = getMessagesInRange(parentMessages, boundary.firstMessageId, boundary.lastMessageId);
-            const blockText = formatMessages(blockMessages, botUserId, botDisplayName, useVerticalFormat);
+            const { text: blockText, usedFirstTimestamp } = formatMessagesWithTimestampTracking(blockMessages, botUserId, botDisplayName, useVerticalFormat, enableTimestamps, isFirstTimestamp);
+            if (usedFirstTimestamp)
+                isFirstTimestamp = false;
             blockData.push({ text: blockText, tokens: boundary.tokenCount });
         }
     }
@@ -320,15 +326,19 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
         // For regular channels or reset threads: Use channel's own blocks
         for (const boundary of currentBoundaries) {
             const blockMessages = getMessagesInRange(currentMessages, boundary.firstMessageId, boundary.lastMessageId);
-            const blockText = formatMessages(blockMessages, botUserId, botDisplayName, useVerticalFormat);
+            const { text: blockText, usedFirstTimestamp } = formatMessagesWithTimestampTracking(blockMessages, botUserId, botDisplayName, useVerticalFormat, enableTimestamps, isFirstTimestamp);
+            if (usedFirstTimestamp)
+                isFirstTimestamp = false;
             blockData.push({ text: blockText, tokens: boundary.tokenCount });
         }
     }
     const tailData = [];
+    // Continue tracking first timestamp from blocks into tail
+    const isFirstTimestampRef = { value: isFirstTimestamp };
     // Include parent's tail for threads so forked contexts don't lose recent history
     if (isThreadContext && !isResetThread && parentChannelId) {
         const parentTailMessages = getTailMessagesAfterLastBoundary(parentMessages, currentBoundaries);
-        tailData.push(...buildTailDataFromMessages(parentTailMessages, botUserId, botDisplayName, useVerticalFormat));
+        tailData.push(...buildTailDataFromMessages(parentTailMessages, botUserId, botDisplayName, useVerticalFormat, enableTimestamps, isFirstTimestampRef));
     }
     // Build tail (messages after last frozen block)
     // For threads: all thread messages (threads don't have their own blocks yet)
@@ -336,7 +346,7 @@ function getContext(channelId, maxTokens, botUserId, botDisplayName, threadId, p
     const tailMessages = isThreadContext
         ? currentMessages
         : getTailMessagesAfterLastBoundary(currentMessages, currentBoundaries);
-    tailData.push(...buildTailDataFromMessages(tailMessages, botUserId, botDisplayName, useVerticalFormat));
+    tailData.push(...buildTailDataFromMessages(tailMessages, botUserId, botDisplayName, useVerticalFormat, enableTimestamps, isFirstTimestampRef));
     // Calculate totals
     let totalTokens = blockData.reduce((sum, b) => sum + b.tokens, 0) +
         tailData.reduce((sum, t) => sum + t.tokens, 0);
@@ -444,6 +454,55 @@ function isMetaMessage(content) {
 // Matches Discord user mention markup: <@123456> or deprecated <@!123456>
 // The !? handles the optional ! flag used in older Discord mention formats
 const USER_MENTION_REGEX = /<@!?(\d+)>/g;
+// ---------- Timestamp Formatting ----------
+/**
+ * Format a timestamp for display in the conversation.
+ * Discord timestamps are UTC milliseconds, converted to configured timezone.
+ *
+ * @param timestamp - UTC milliseconds (from Discord's createdTimestamp)
+ * @param includeTimezone - Whether to include timezone abbreviation (first timestamp only)
+ * @returns Formatted time string like "2:30 PM" or "2:30 PM EST"
+ */
+function formatTimestamp(timestamp, includeTimezone) {
+    const date = new Date(timestamp);
+    const timezone = config_1.globalConfig.timestampTimezone;
+    // Format time without timezone
+    const timeFormatter = new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: timezone,
+    });
+    const timeStr = timeFormatter.format(date);
+    if (!includeTimezone) {
+        return timeStr;
+    }
+    // Get timezone abbreviation
+    const tzFormatter = new Intl.DateTimeFormat('en-US', {
+        timeZoneName: 'short',
+        timeZone: timezone,
+    });
+    const parts = tzFormatter.formatToParts(date);
+    const tzPart = parts.find((p) => p.type === 'timeZoneName');
+    const tzAbbrev = tzPart?.value ?? timezone;
+    return `${timeStr} ${tzAbbrev}`;
+}
+/**
+ * Check if there's a significant time gap between two messages.
+ * Returns true if gap >= configured threshold (default 10 minutes).
+ */
+function hasSignificantGap(prevTimestamp, currTimestamp) {
+    const gapMs = currTimestamp - prevTimestamp;
+    const gapMinutes = gapMs / (1000 * 60);
+    return gapMinutes >= config_1.globalConfig.timestampGapMinutes;
+}
+/**
+ * Create a timestamp marker line for insertion between messages.
+ */
+function createTimestampMarker(timestamp, includeTimezone) {
+    const formatted = formatTimestamp(timestamp, includeTimezone);
+    return `[${formatted}]`;
+}
 function normalizeMessageContent(rawContent, botUserId, botDisplayName) {
     const trimmed = rawContent.trim();
     if (!trimmed) {
@@ -472,10 +531,41 @@ function formatMessage(msg, botUserId, botDisplayName, useVerticalFormat = false
     }
     return `${authorName}: ${normalizedContent}`;
 }
-function formatMessages(messages, botUserId, botDisplayName, useVerticalFormat = false) {
+function formatMessages(messages, botUserId, botDisplayName, useVerticalFormat = false, enableTimestamps = false) {
+    const result = formatMessagesWithTimestampTracking(messages, botUserId, botDisplayName, useVerticalFormat, enableTimestamps, true);
+    return result.text;
+}
+/**
+ * Format messages with timestamp tracking across multiple calls.
+ * Returns the formatted text and whether the first timestamp was used.
+ */
+function formatMessagesWithTimestampTracking(messages, botUserId, botDisplayName, useVerticalFormat, enableTimestamps, isFirstTimestamp) {
     // Filter out meta-messages (commands and system responses)
     const filtered = messages.filter((m) => !isMetaMessage(m.content));
-    return filtered.map((m) => formatMessage(m, botUserId, botDisplayName, useVerticalFormat)).join('\n');
+    if (!enableTimestamps || filtered.length === 0) {
+        return {
+            text: filtered.map((m) => formatMessage(m, botUserId, botDisplayName, useVerticalFormat)).join('\n'),
+            usedFirstTimestamp: false,
+        };
+    }
+    // Build output with timestamp markers for significant gaps
+    const lines = [];
+    let usedFirst = false;
+    let currentIsFirst = isFirstTimestamp;
+    for (let i = 0; i < filtered.length; i++) {
+        const msg = filtered[i];
+        const prevMsg = i > 0 ? filtered[i - 1] : null;
+        // Check for gap and insert timestamp marker
+        if (prevMsg && hasSignificantGap(prevMsg.timestamp, msg.timestamp)) {
+            lines.push(createTimestampMarker(msg.timestamp, currentIsFirst));
+            if (currentIsFirst) {
+                usedFirst = true;
+                currentIsFirst = false;
+            }
+        }
+        lines.push(formatMessage(msg, botUserId, botDisplayName, useVerticalFormat));
+    }
+    return { text: lines.join('\n'), usedFirstTimestamp: usedFirst };
 }
 function getTailMessagesAfterLastBoundary(messages, boundaries) {
     if (boundaries.length === 0) {
@@ -488,18 +578,29 @@ function getTailMessagesAfterLastBoundary(messages, boundaries) {
     const lastBoundaryIdx = messages.findIndex((m) => m.id === lastBoundary.lastMessageId);
     return lastBoundaryIdx !== -1 ? messages.slice(lastBoundaryIdx + 1) : messages;
 }
-function buildTailDataFromMessages(messages, botUserId, botDisplayName, useVerticalFormat = false) {
+function buildTailDataFromMessages(messages, botUserId, botDisplayName, useVerticalFormat = false, enableTimestamps = false, isFirstTimestampRef) {
     const tailData = [];
-    for (const msg of messages) {
-        if (isMetaMessage(msg.content))
-            continue;
+    const filtered = messages.filter((m) => !isMetaMessage(m.content));
+    // Track first timestamp across calls (for parent tail + thread tail)
+    const isFirstTimestamp = isFirstTimestampRef ?? { value: true };
+    for (let i = 0; i < filtered.length; i++) {
+        const msg = filtered[i];
+        const prevMsg = i > 0 ? filtered[i - 1] : null;
         const authorName = msg.authorId === botUserId ? botDisplayName : msg.authorName;
         const normalizedContent = normalizeMessageContent(msg.content, botUserId, botDisplayName);
-        const formatted = useVerticalFormat
+        let formatted = useVerticalFormat
             ? `[${authorName}]\n${normalizedContent}`
             : `${authorName}: ${normalizedContent}`;
+        // Prepend timestamp marker if there's a significant gap
+        if (enableTimestamps && prevMsg && hasSignificantGap(prevMsg.timestamp, msg.timestamp)) {
+            const marker = createTimestampMarker(msg.timestamp, isFirstTimestamp.value);
+            formatted = `${marker}\n${formatted}`;
+            isFirstTimestamp.value = false;
+        }
         const tokens = estimateMessageTokens(authorName, normalizedContent, useVerticalFormat);
-        tailData.push({ text: formatted, tokens });
+        // Add a small buffer for timestamp marker tokens if present
+        const timestampTokens = enableTimestamps && prevMsg && hasSignificantGap(prevMsg.timestamp, msg.timestamp) ? 8 : 0;
+        tailData.push({ text: formatted, tokens: tokens + timestampTokens });
     }
     return tailData;
 }

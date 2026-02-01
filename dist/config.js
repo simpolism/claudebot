@@ -55,6 +55,8 @@ exports.globalConfig = {
     temperature: parseFloat(process.env.TEMPERATURE || '1'),
     approxCharsPerToken: parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4'),
     discordMessageLimit: 2000,
+    timestampTimezone: process.env.TIMESTAMP_TIMEZONE || 'America/New_York',
+    timestampGapMinutes: parseInt(process.env.TIMESTAMP_GAP_MINUTES || '10', 10),
 };
 // Load bot configurations from JSON file
 function loadBotConfigsFromJSON() {
@@ -89,6 +91,7 @@ function loadBotConfigsFromJSON() {
             useUserAssistantPrefill: jsonConfig.useUserAssistantPrefill,
             cliSimMode: jsonConfig.cliSimMode,
             useVerticalFormat: jsonConfig.useVerticalFormat,
+            enableTimestamps: jsonConfig.enableTimestamps,
         }));
     }
     catch (err) {

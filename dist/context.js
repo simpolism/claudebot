@@ -8,7 +8,7 @@ Object.defineProperty(exports, "appendMessage", { enumerable: true, get: functio
 Object.defineProperty(exports, "getBlockBoundaries", { enumerable: true, get: function () { return message_store_1.getBlockBoundaries; } });
 // ---------- Context Building ----------
 async function buildConversationContext(params) {
-    const { channel, maxContextTokens, client, botDisplayName, useVerticalFormat = false } = params;
+    const { channel, maxContextTokens, client, botDisplayName, useVerticalFormat = false, enableTimestamps = false } = params;
     if (!channel.isTextBased() || !client.user) {
         return { cachedBlocks: [], tail: [] };
     }
@@ -21,7 +21,7 @@ async function buildConversationContext(params) {
     if (isThread && threadId && parentChannelId) {
         await (0, message_store_1.lazyLoadThread)(threadId, parentChannelId, client, botUserId);
     }
-    const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName, threadId, parentChannelId ?? undefined, useVerticalFormat);
+    const channelResult = (0, message_store_1.getContext)(channel.id, maxContextTokens, botUserId, botDisplayName, threadId, parentChannelId ?? undefined, useVerticalFormat, enableTimestamps);
     // Convert tail strings to SimpleMessage format
     const tail = channelResult.tail.map((content) => {
         const isAssistant = useVerticalFormat

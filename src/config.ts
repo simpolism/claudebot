@@ -33,6 +33,9 @@ export interface BotConfig {
 
   // Use vertical transcript format: [Name]\nMessage instead of Name: Message
   useVerticalFormat?: boolean;
+
+  // Enable lightweight timestamps showing time gaps in conversation
+  enableTimestamps?: boolean;
 }
 
 // JSON file format (env var names instead of actual values)
@@ -55,6 +58,7 @@ interface BotConfigJSON {
   useUserAssistantPrefill?: boolean;
   cliSimMode?: boolean;
   useVerticalFormat?: boolean;
+  enableTimestamps?: boolean;
 }
 
 // Global configuration shared across all bots
@@ -75,6 +79,8 @@ export const globalConfig = {
   temperature: parseFloat(process.env.TEMPERATURE || '1'),
   approxCharsPerToken: parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4'),
   discordMessageLimit: 2000,
+  timestampTimezone: process.env.TIMESTAMP_TIMEZONE || 'America/New_York',
+  timestampGapMinutes: parseInt(process.env.TIMESTAMP_GAP_MINUTES || '10', 10),
 };
 
 // Load bot configurations from JSON file
@@ -113,6 +119,7 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       useUserAssistantPrefill: jsonConfig.useUserAssistantPrefill,
       cliSimMode: jsonConfig.cliSimMode,
       useVerticalFormat: jsonConfig.useVerticalFormat,
+      enableTimestamps: jsonConfig.enableTimestamps,
     }));
   } catch (err) {
     console.error(`Failed to load bots.json:`, err);

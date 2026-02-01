@@ -262,6 +262,7 @@ function setupBotEvents(instance) {
                     client,
                     botDisplayName,
                     useVerticalFormat: config.useVerticalFormat ?? false,
+                    enableTimestamps: config.enableTimestamps ?? false,
                 });
                 const contextDuration = Date.now() - contextStart;
                 console.log(`[${config.name}] Context built for ${msg.id} in ${contextDuration}ms`);
@@ -416,11 +417,20 @@ function setupBotEvents(instance) {
     });
 }
 // ---------- Main ----------
+// Check for --rehydrate flag
+const shouldRehydrate = process.argv.includes('--rehydrate');
 async function main() {
     // Start debug server for inspecting in-memory state
     (0, debug_server_1.startDebugServer)();
     console.log('[Database] Initializing SQLite storage');
     (0, database_1.initializeDatabase)();
+    // Handle --rehydrate flag: clear database to force fresh fetch from Discord
+    if (shouldRehydrate) {
+        console.log('[Rehydrate] Clearing database and in-memory state...');
+        (0, database_1.clearAllData)();
+        (0, message_store_1.clearAll)();
+        console.log('[Rehydrate] Database cleared. Will fetch fresh history from Discord.');
+    }
     const stats = (0, database_1.getDatabaseStats)();
     console.log('[Database] Current state:', stats);
     console.log('Starting multi-bot system with configuration:', {

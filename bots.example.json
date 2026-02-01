@@ -4,7 +4,8 @@
     "discordTokenEnv": "HAIKU_DISCORD_TOKEN",
     "provider": "anthropic",
     "model": "claude-haiku-4-5",
-    "keepDoubleNewlines": true
+    "keepDoubleNewlines": true,
+    "enableTimestamps": true
   },
   {
     "name": "CL-KU",

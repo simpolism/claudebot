@@ -358,6 +358,111 @@ describe('message-store', () => {
   });
 });
 
+describe('timestamp formatting', () => {
+  it('inserts timestamp markers after gaps of 10+ minutes', async () => {
+    const store = getStoreModule();
+    const channelId = 'timestamp-chan';
+
+    // Message 1 at t=0
+    const msg1 = createMockDiscordMessage(
+      { id: '1000000', content: 'Hello', authorId: 'alice', authorName: 'alice' },
+      channelId,
+    );
+    await store.appendMessage(msg1);
+
+    // Message 2 at t=15 minutes later (15 * 60 = 900 seconds = 900000 more in ID)
+    const msg2 = createMockDiscordMessage(
+      { id: '1000900', content: 'Hi there', authorId: 'bob', authorName: 'bob' },
+      channelId,
+    );
+    await store.appendMessage(msg2);
+
+    // Message 3 at t=16 minutes (only 1 min after msg2, no gap)
+    const msg3 = createMockDiscordMessage(
+      { id: '1000960', content: 'How are you?', authorId: 'alice', authorName: 'alice' },
+      channelId,
+    );
+    await store.appendMessage(msg3);
+
+    // Get context with timestamps enabled
+    const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester', null, undefined, false, true);
+
+    // Should have 3 tail entries
+    expect(result.tail).toHaveLength(3);
+
+    // First message should NOT have timestamp (no prior message to compare)
+    expect(result.tail[0]).toBe('alice: Hello');
+
+    // Second message SHOULD have timestamp (15 min gap from first)
+    expect(result.tail[1]).toMatch(/^\[.*\]\nbob: Hi there$/);
+
+    // Third message should NOT have timestamp (only 1 min gap)
+    expect(result.tail[2]).toBe('alice: How are you?');
+  });
+
+  it('includes timezone only on first timestamp', async () => {
+    const store = getStoreModule();
+    const channelId = 'tz-chan';
+
+    // Create 3 messages with 15-minute gaps between each
+    const msg1 = createMockDiscordMessage(
+      { id: '2000000', content: 'First', authorId: 'alice', authorName: 'alice' },
+      channelId,
+    );
+    await store.appendMessage(msg1);
+
+    const msg2 = createMockDiscordMessage(
+      { id: '2000900', content: 'Second', authorId: 'bob', authorName: 'bob' },
+      channelId,
+    );
+    await store.appendMessage(msg2);
+
+    const msg3 = createMockDiscordMessage(
+      { id: '2001800', content: 'Third', authorId: 'alice', authorName: 'alice' },
+      channelId,
+    );
+    await store.appendMessage(msg3);
+
+    const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester', null, undefined, false, true);
+
+    // Second message should have timezone (first timestamp)
+    // Look for common timezone abbreviations
+    expect(result.tail[1]).toMatch(/\[(.*?(EST|EDT|PST|PDT|UTC|CST|CDT|[A-Z]{2,4}))\]/);
+
+    // Third message should NOT have timezone (subsequent timestamp)
+    // Should just be time like [12:30 PM] without timezone
+    const thirdTimestamp = result.tail[2]?.match(/\[(.*?)\]/)?.[1];
+    expect(thirdTimestamp).toBeDefined();
+    // Subsequent timestamps should be shorter (no timezone)
+    expect(thirdTimestamp).not.toMatch(/EST|EDT|PST|PDT|UTC|CST|CDT/);
+  });
+
+  it('does not insert timestamps when enableTimestamps is false', async () => {
+    const store = getStoreModule();
+    const channelId = 'no-ts-chan';
+
+    const msg1 = createMockDiscordMessage(
+      { id: '3000000', content: 'Hello', authorId: 'alice', authorName: 'alice' },
+      channelId,
+    );
+    await store.appendMessage(msg1);
+
+    const msg2 = createMockDiscordMessage(
+      { id: '3000900', content: 'Hi there', authorId: 'bob', authorName: 'bob' },
+      channelId,
+    );
+    await store.appendMessage(msg2);
+
+    // Get context with timestamps DISABLED (default)
+    const result = store.getContext(channelId, 10000, 'bot-user', 'UnitTester', null, undefined, false, false);
+
+    // Should have 2 tail entries, no timestamps
+    expect(result.tail).toHaveLength(2);
+    expect(result.tail[0]).toBe('alice: Hello');
+    expect(result.tail[1]).toBe('bob: Hi there');
+  });
+});
+
 describe('buildConversationContext', () => {
   it('builds context from in-memory messages', async () => {
     const store = getStoreModule();

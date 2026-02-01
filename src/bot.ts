@@ -16,6 +16,7 @@ import {
   appendStoredMessage,
   StoredMessage,
   clearThread,
+  clearAll as clearAllMemory,
 } from './message-store';
 import {
   buildConversationContext,
@@ -24,7 +25,7 @@ import {
 } from './context';
 import { chunkReplyText, convertOutputMentions } from './discord-utils';
 import { startDebugServer } from './debug-server';
-import { initializeDatabase, closeDatabase, getDatabaseStats } from './database';
+import { initializeDatabase, closeDatabase, getDatabaseStats, clearAllData } from './database';
 
 // ---------- Types ----------
 export interface BotInstance {
@@ -351,6 +352,7 @@ function setupBotEvents(instance: BotInstance): void {
           client,
           botDisplayName,
           useVerticalFormat: config.useVerticalFormat ?? false,
+          enableTimestamps: config.enableTimestamps ?? false,
         });
         const contextDuration = Date.now() - contextStart;
         console.log(
@@ -533,12 +535,25 @@ function setupBotEvents(instance: BotInstance): void {
 }
 
 // ---------- Main ----------
+
+// Check for --rehydrate flag
+const shouldRehydrate = process.argv.includes('--rehydrate');
+
 async function main(): Promise<void> {
   // Start debug server for inspecting in-memory state
   startDebugServer();
 
   console.log('[Database] Initializing SQLite storage');
   initializeDatabase();
+
+  // Handle --rehydrate flag: clear database to force fresh fetch from Discord
+  if (shouldRehydrate) {
+    console.log('[Rehydrate] Clearing database and in-memory state...');
+    clearAllData();
+    clearAllMemory();
+    console.log('[Rehydrate] Database cleared. Will fetch fresh history from Discord.');
+  }
+
   const stats = getDatabaseStats();
   console.log('[Database] Current state:', stats);
 

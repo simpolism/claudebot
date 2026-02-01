@@ -15,8 +15,9 @@ export async function buildConversationContext(params: {
   client: Client;
   botDisplayName: string;
   useVerticalFormat?: boolean;
+  enableTimestamps?: boolean;
 }): Promise<ConversationData> {
-  const { channel, maxContextTokens, client, botDisplayName, useVerticalFormat = false } = params;
+  const { channel, maxContextTokens, client, botDisplayName, useVerticalFormat = false, enableTimestamps = false } = params;
 
   if (!channel.isTextBased() || !client.user) {
     return { cachedBlocks: [], tail: [] };
@@ -42,6 +43,7 @@ export async function buildConversationContext(params: {
     threadId,
     parentChannelId ?? undefined,
     useVerticalFormat,
+    enableTimestamps,
   );
 
   // Convert tail strings to SimpleMessage format
