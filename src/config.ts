@@ -78,7 +78,7 @@ export const globalConfig = {
   maxTokens: parseInt(process.env.MAX_TOKENS || '4096', 10),
   temperature: parseFloat(process.env.TEMPERATURE || '1'),
   approxCharsPerToken: parseFloat(process.env.APPROX_CHARS_PER_TOKEN || '4'),
-  discordMessageLimit: 2000,
+  discordMessageLimit: parseInt(process.env.DISCORD_MESSAGE_LIMIT || '1500', 10),
   timestampTimezone: process.env.TIMESTAMP_TIMEZONE || 'America/New_York',
   timestampGapMinutes: parseInt(process.env.TIMESTAMP_GAP_MINUTES || '10', 10),
 };
