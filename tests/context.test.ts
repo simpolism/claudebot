@@ -356,6 +356,171 @@ describe('message-store', () => {
     const lastTail = result.tail[result.tail.length - 1];
     expect(lastTail).toContain('message number 10');
   });
+
+  it('snapshots parent channel context at thread start', () => {
+    const store = getStoreModule();
+    const parentChannelId = 'parent-chan';
+    const threadId = 'thread-chan';
+
+    store.appendStoredMessage({
+      id: '1000',
+      channelId: parentChannelId,
+      threadId: null,
+      parentChannelId,
+      authorId: 'alice',
+      authorName: 'alice',
+      content: 'parent before 1',
+      timestamp: 1000,
+    });
+    store.appendStoredMessage({
+      id: '2000',
+      channelId: parentChannelId,
+      threadId: null,
+      parentChannelId,
+      authorId: 'alice',
+      authorName: 'alice',
+      content: 'parent before 2',
+      timestamp: 2000,
+    });
+    store.appendStoredMessage({
+      id: '3000',
+      channelId: threadId,
+      threadId,
+      parentChannelId,
+      authorId: 'bob',
+      authorName: 'bob',
+      content: 'thread hello',
+      timestamp: 3000,
+    });
+    store.appendStoredMessage({
+      id: '4000',
+      channelId: parentChannelId,
+      threadId: null,
+      parentChannelId,
+      authorId: 'alice',
+      authorName: 'alice',
+      content: 'parent after thread start',
+      timestamp: 4000,
+    });
+    store.appendStoredMessage({
+      id: '5000',
+      channelId: threadId,
+      threadId,
+      parentChannelId,
+      authorId: 'bob',
+      authorName: 'bob',
+      content: 'thread followup',
+      timestamp: 5000,
+    });
+
+    const result = store.getContext(
+      threadId,
+      10000,
+      'bot-user',
+      'UnitTester',
+      threadId,
+      parentChannelId,
+    );
+
+    expect(result.blocks).toEqual([]);
+    expect(result.tail).toEqual([
+      'alice: parent before 1',
+      'alice: parent before 2',
+      'bob: thread hello',
+      'bob: thread followup',
+    ]);
+    expect(result.tail.join('\n')).not.toContain('parent after thread start');
+  });
+
+  it('excludes parent blocks that extend past the thread boundary', () => {
+    const store = getStoreModule();
+    const parentChannelId = 'parent-with-block';
+    const threadId = 'thread-with-block';
+
+    databaseModule?.insertMessage({
+      id: '1000',
+      channelId: parentChannelId,
+      threadId: null,
+      parentChannelId,
+      authorId: 'alice',
+      authorName: 'alice',
+      content: 'parent before block 1',
+      timestamp: 1000,
+      createdAt: Date.now(),
+    });
+    databaseModule?.insertMessage({
+      id: '2000',
+      channelId: parentChannelId,
+      threadId: null,
+      parentChannelId,
+      authorId: 'alice',
+      authorName: 'alice',
+      content: 'parent before block 2',
+      timestamp: 2000,
+      createdAt: Date.now(),
+    });
+    databaseModule?.insertMessage({
+      id: '4000',
+      channelId: parentChannelId,
+      threadId: null,
+      parentChannelId,
+      authorId: 'alice',
+      authorName: 'alice',
+      content: 'parent after block',
+      timestamp: 4000,
+      createdAt: Date.now(),
+    });
+    databaseModule?.insertBlockBoundary({
+      channelId: parentChannelId,
+      threadId: null,
+      firstMessageId: '1000',
+      lastMessageId: '4000',
+      tokenCount: 999,
+      createdAt: Date.now(),
+    });
+
+    store.__testing.hydrateChannelFromDatabase(parentChannelId);
+
+    store.appendStoredMessage({
+      id: '3000',
+      channelId: threadId,
+      threadId,
+      parentChannelId,
+      authorId: 'bob',
+      authorName: 'bob',
+      content: 'thread start',
+      timestamp: 3000,
+    });
+    store.appendStoredMessage({
+      id: '5000',
+      channelId: threadId,
+      threadId,
+      parentChannelId,
+      authorId: 'bob',
+      authorName: 'bob',
+      content: 'thread reply',
+      timestamp: 5000,
+    });
+
+    const result = store.getContext(
+      threadId,
+      10000,
+      'bot-user',
+      'UnitTester',
+      threadId,
+      parentChannelId,
+    );
+
+    expect(result.blocks).toEqual([]);
+    expect(result.tail).toEqual([
+      'alice: parent before block 1',
+      'alice: parent before block 2',
+      'bob: thread start',
+      'bob: thread reply',
+    ]);
+    expect(result.blocks.join('\n')).not.toContain('parent after block');
+    expect(result.tail.join('\n')).not.toContain('parent after block');
+  });
 });
 
 describe('timestamp formatting', () => {

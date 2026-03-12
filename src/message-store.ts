@@ -329,7 +329,7 @@ export function getContext(
   useVerticalFormat = false,
   enableTimestamps = false,
 ): ContextResult {
-  // For threads: use parent's blocks + thread's tail (unless thread was reset for this bot)
+  // For threads: snapshot the parent's context at thread start, then append the thread's own messages
   // For channels: use channel's blocks + tail
   const isThreadContext = threadId != null && parentChannelId != null;
   const isResetThread = threadId != null && isThreadResetForBot(threadId, botUserId);
@@ -365,9 +365,24 @@ export function getContext(
 
   const parentMessages =
     isThreadContext && parentChannelId ? messagesByChannel.get(parentChannelId) ?? [] : [];
+  const threadStartTimestamp =
+    isThreadContext && currentMessages.length > 0 ? currentMessages[0]!.timestamp : null;
+  const snapshotParentMessages =
+    isThreadContext && !isResetThread && threadStartTimestamp != null
+      ? parentMessages.filter((msg) => msg.timestamp < threadStartTimestamp)
+      : parentMessages;
+  const snapshotParentMessageIds = new Set(snapshotParentMessages.map((msg) => msg.id));
+  const snapshotParentBoundaries =
+    isThreadContext && !isResetThread && threadStartTimestamp != null
+      ? currentBoundaries.filter(
+          (boundary) =>
+            snapshotParentMessageIds.has(boundary.firstMessageId) &&
+            snapshotParentMessageIds.has(boundary.lastMessageId),
+        )
+      : currentBoundaries;
 
   // Build frozen blocks with their stored token counts
-  // For threads: these are the parent's cached blocks (unless reset)
+  // For threads: these are the parent's cached blocks up to thread start (unless reset)
   const blockData: Array<{ text: string; tokens: number }> = [];
 
   // Track first timestamp state across blocks and tail
@@ -376,10 +391,10 @@ export function getContext(
   let isFirstTimestamp = true;
 
   if (isThreadContext && !isResetThread) {
-    // For threads: Get parent channel messages to build parent blocks
-    for (const boundary of currentBoundaries) {
+    // For threads: use only parent blocks that were fully formed before the thread began
+    for (const boundary of snapshotParentBoundaries) {
       const blockMessages = getMessagesInRange(
-        parentMessages,
+        snapshotParentMessages,
         boundary.firstMessageId,
         boundary.lastMessageId,
       );
@@ -410,11 +425,11 @@ export function getContext(
   // Continue tracking first timestamp from blocks into tail
   const isFirstTimestampRef = { value: isFirstTimestamp };
 
-  // Include parent's tail for threads so forked contexts don't lose recent history
+  // Include only the parent's pre-thread tail so later main-channel chatter doesn't leak into the thread
   if (isThreadContext && !isResetThread && parentChannelId) {
     const parentTailMessages = getTailMessagesAfterLastBoundary(
-      parentMessages,
-      currentBoundaries,
+      snapshotParentMessages,
+      snapshotParentBoundaries,
     );
     tailData.push(
       ...buildTailDataFromMessages(parentTailMessages, botUserId, botDisplayName, useVerticalFormat, enableTimestamps, isFirstTimestampRef),
