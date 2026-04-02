@@ -36,6 +36,8 @@ type ProviderInitOptions = {
   geminiOutputMode: 'text' | 'image' | 'both';
   botDisplayName: string;
   useVerticalFormat: boolean;
+  enableReasoning: boolean;
+  showReasoning: boolean;
 };
 
 type ProviderRequest = {
@@ -228,6 +230,8 @@ class OpenAIProvider implements AIProvider {
   private useUserAssistantPrefill: boolean;
   private usePromptCaching: boolean;
   private useVerticalFormat: boolean;
+  private enableReasoning: boolean;
+  private showReasoning: boolean;
 
   constructor(options: ProviderInitOptions) {
     const apiKey = options.openaiApiKey;
@@ -243,6 +247,8 @@ class OpenAIProvider implements AIProvider {
     this.useUserAssistantPrefill = options.useUserAssistantPrefill;
     this.usePromptCaching = options.useOpenAIEndpointOptimizations;
     this.useVerticalFormat = options.useVerticalFormat ?? false;
+    this.enableReasoning = options.enableReasoning ?? false;
+    this.showReasoning = options.showReasoning ?? false;
     this.client = new OpenAI({
       apiKey,
       baseURL: options.openaiBaseURL,
@@ -361,6 +367,7 @@ class OpenAIProvider implements AIProvider {
 
     type OpenAIStreamingParams = ChatCompletionCreateParamsStreaming & {
       max_completion_tokens?: number;
+      reasoning?: { enabled: boolean };
     };
 
     const requestPayload: OpenAIStreamingParams = {
@@ -368,6 +375,7 @@ class OpenAIProvider implements AIProvider {
       temperature: this.temperature,
       stream: true,
       messages,
+      ...(this.enableReasoning && { reasoning: { enabled: true } }),
     };
 
     if (this.usePromptCaching) {
@@ -381,12 +389,17 @@ class OpenAIProvider implements AIProvider {
     const stream = await this.client.chat.completions.create(requestPayload);
 
     let aggregatedText = '';
+    let aggregatedReasoning = '';
     let abortedByGuard = false;
 
     try {
       for await (const chunk of stream) {
         if (guard.truncated) break;
         const deltaText = extractOpenAIDelta(chunk);
+        if (this.enableReasoning) {
+          const reasoningText = extractOpenAIReasoningDelta(chunk);
+          if (reasoningText) aggregatedReasoning += reasoningText;
+        }
         if (!deltaText) continue;
         aggregatedText += deltaText;
         const checked = guard.inspect(aggregatedText);
@@ -405,6 +418,11 @@ class OpenAIProvider implements AIProvider {
 
     if (this.usePromptCaching) {
       aggregatedText = stripAssistantPrefillPrefix(aggregatedText, assistantName, this.useVerticalFormat);
+    }
+
+    // Prepend reasoning from the API reasoning field when showReasoning is on
+    if (this.showReasoning && aggregatedReasoning.trim()) {
+      aggregatedText = `<think>\n${aggregatedReasoning.trim()}\n</think>\n${aggregatedText}`;
     }
 
     return finalizeResponse(aggregatedText, guard);
@@ -640,6 +658,19 @@ function buildTranscriptFromData(cachedBlocks: string[], tail: SimpleMessage[]):
     parts.push(tail.map((m) => m.content).join('\n'));
   }
   return parts.join('\n').trim();
+}
+
+function extractOpenAIReasoningDelta(chunk: ChatCompletionChunk): string {
+  if (!chunk?.choices?.length) return '';
+  return chunk.choices
+    .map((choice) => {
+      const delta = choice.delta as Record<string, unknown>;
+      // OpenRouter/reasoning models may use reasoning_content or reasoning
+      const reasoning = delta?.reasoning_content ?? delta?.reasoning;
+      if (typeof reasoning === 'string') return reasoning;
+      return '';
+    })
+    .join('');
 }
 
 function extractOpenAIDelta(chunk: ChatCompletionChunk): string {

@@ -36,6 +36,12 @@ export interface BotConfig {
 
   // Enable lightweight timestamps showing time gaps in conversation
   enableTimestamps?: boolean;
+
+  // Enable reasoning/thinking for models that support it (e.g. Trinity)
+  enableReasoning?: boolean;
+
+  // Show reasoning output in Discord (collapsed in a block). Requires enableReasoning.
+  showReasoning?: boolean;
 }
 
 // JSON file format (env var names instead of actual values)
@@ -59,6 +65,8 @@ interface BotConfigJSON {
   cliSimMode?: boolean;
   useVerticalFormat?: boolean;
   enableTimestamps?: boolean;
+  enableReasoning?: boolean;
+  showReasoning?: boolean;
 }
 
 // Global configuration shared across all bots
@@ -120,6 +128,8 @@ function loadBotConfigsFromJSON(): BotConfig[] {
       cliSimMode: jsonConfig.cliSimMode,
       useVerticalFormat: jsonConfig.useVerticalFormat,
       enableTimestamps: jsonConfig.enableTimestamps,
+      enableReasoning: jsonConfig.enableReasoning,
+      showReasoning: jsonConfig.showReasoning,
     }));
   } catch (err) {
     console.error(`Failed to load bots.json:`, err);

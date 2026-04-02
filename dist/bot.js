@@ -152,6 +152,8 @@ function createBotInstance(botConfig) {
         geminiOutputMode: resolved.geminiOutputMode || 'both',
         botDisplayName: resolved.name || 'Bot',
         useVerticalFormat: resolved.useVerticalFormat ?? false,
+        enableReasoning: resolved.enableReasoning ?? false,
+        showReasoning: resolved.showReasoning ?? false,
     });
     return { config: botConfig, client, aiProvider };
 }

@@ -92,6 +92,8 @@ function loadBotConfigsFromJSON() {
             cliSimMode: jsonConfig.cliSimMode,
             useVerticalFormat: jsonConfig.useVerticalFormat,
             enableTimestamps: jsonConfig.enableTimestamps,
+            enableReasoning: jsonConfig.enableReasoning,
+            showReasoning: jsonConfig.showReasoning,
         }));
     }
     catch (err) {
